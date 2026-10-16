@@ -1,0 +1,45 @@
+{
+  "name": "@rack/api-rack",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=../../.env dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "auth:repair-jwks": "tsx --env-file-if-exists=../../.env src/auth/repair-jwks.ts",
+    "auth:schema": "auth generate --config src/auth/auth.cli.ts --output ../../packages/database/prisma/schema.prisma -y"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "1.7.7",
+    "@better-auth/cimd": "1.7.7",
+    "@better-auth/mcp": "1.7.7",
+    "@better-auth/oauth-provider": "1.7.7",
+    "@fastify/cors": "11.3.0",
+    "@fastify/static": "10.1.5",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@rack/database": "workspace:*",
+    "@rack/mcp-kit": "workspace:*",
+    "@rack/mcp-sample": "workspace:*",
+    "@rack/mcp-site-public": "workspace:*",
+    "@rack/tools": "workspace:*",
+    "better-auth": "1.7.7",
+    "fastify": "5.12.5",
+    "jose": "6.2.12",
+    "nodemailer": "10.0.15",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/node": "26.6.4",
+    "@types/nodemailer": "8.0.2",
+    "auth": "1.7.7",
+    "dotenv": "18.0.6",
+    "tsx": "4.23.15",
+    "typescript": "6.0.2",
+    "vitest": "5.0.3"
+  }
+}

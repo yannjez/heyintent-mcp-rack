@@ -1,0 +1,10 @@
+node_modules
+dist
+.turbo
+.vite
+coverage
+.env
+.env.local
+*.log
+*.tsbuildinfo
+packages/database/src/generated

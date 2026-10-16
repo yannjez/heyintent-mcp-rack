@@ -1,0 +1,53 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "concurrency": "16",
+  "globalPassThroughEnv": [
+    "ADMIN_EMAILS",
+    "ALLOWED_EMAIL_DOMAINS",
+    "BETTER_AUTH_SECRET",
+    "BETTER_AUTH_URL",
+    "DATABASE_URL",
+    "ENCRYPTION_KEY",
+    "GITHUB_TOKEN",
+    "HOST",
+    "NODE_ENV",
+    "OPENROUTER_ALLOWED_MODELS",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_DEFAULT_MODEL",
+    "OPENROUTER_IMAGE_MODEL",
+    "PORT",
+    "SMTP_FROM",
+    "SMTP_HOST",
+    "SMTP_PASSWORD",
+    "SMTP_PORT",
+    "SMTP_SECURE",
+    "SMTP_USER",
+    "WEB_DEV_ORIGIN",
+    "WEB_DIST"
+  ],
+  "tasks": {
+    "generate": {
+      "cache": false,
+      "outputs": ["src/generated/**"]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["^build"]
+    }
+  }
+}
