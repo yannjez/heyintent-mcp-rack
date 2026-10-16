@@ -23,6 +23,8 @@ export interface McpRoutesDeps extends McpHandlerDeps {
 export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDeps) {
   const handlers = new Map<string, McpHttpHandler>();
   for (const definition of deps.registry.definitions) {
+    // External MCPs are served by their own app, which validates rack tokens.
+    if (definition.external) continue;
     handlers.set(definition.slug, createRackMcpHandler(definition, deps));
   }
   app.addHook("onClose", async () => {

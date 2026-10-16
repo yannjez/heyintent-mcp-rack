@@ -3,6 +3,7 @@ import { cimd } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
 import { mcp } from "@better-auth/mcp";
 import type { Db } from "@rack/database";
+import { type Access, mcpScopes, parseMcpScope } from "@rack/mcp-kit";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError, createAuthMiddleware } from "better-auth/api";
@@ -24,10 +25,40 @@ export interface AuthInput {
   /** Scopes advertised to OAuth clients (mcp:<slug>:read|write). */
   extraScopes?: string[];
   trustedOrigins?: string[];
+  /** Apps hosted elsewhere: tokens are issued for `<url>` (UI) and `<url>/mcp`. */
+  externalResources?: { slug: string; name: string; url: string }[];
+  /** Current MCP access of a user, embedded in access tokens as `mcp_access`. */
+  mcpAccesses?: (userId: string) => Promise<Record<string, Access>>;
 }
 
 export function mcpResource(baseUrl: string) {
   return `${baseUrl.replace(/\/$/, "")}/mcp`;
+}
+
+/** External tokens are short-lived so access changes in the rack apply quickly. */
+const EXTERNAL_ACCESS_TOKEN_TTL = 900;
+
+/**
+ * Access level per MCP slug that a token may use: what its scopes ask for,
+ * capped by what the user is allowed in the rack.
+ */
+export function grantedMcpAccess(
+  scopes: readonly string[],
+  allowed: Record<string, Access>,
+): Record<string, Access> {
+  const requested: Record<string, Access> = {};
+  for (const scope of scopes) {
+    const parsed = parseMcpScope(scope);
+    if (!parsed) continue;
+    if (requested[parsed.slug] !== "write") requested[parsed.slug] = parsed.access;
+  }
+  const granted: Record<string, Access> = {};
+  for (const [slug, wanted] of Object.entries(requested)) {
+    const permitted = allowed[slug];
+    if (!permitted) continue;
+    granted[slug] = wanted === "write" && permitted === "write" ? "write" : "read";
+  }
+  return granted;
 }
 
 /**
@@ -99,11 +130,28 @@ export function createAuth(db: Db | object, input: AuthInput) {
         consentPage: "/consent",
         resource,
         // Explicit resource row: the Prisma scalar list `allowedScopes` cannot be null.
-        resources: [{ identifier: resource, name: "MCP Accès", allowedScopes: scopes }],
+        resources: [
+          { identifier: resource, name: "MCP Accès", allowedScopes: scopes },
+          ...(input.externalResources ?? []).flatMap((external) =>
+            [external.url, `${external.url}/mcp`].map((identifier) => ({
+              identifier,
+              name: external.name,
+              allowedScopes: [...BASE_SCOPES, ...mcpScopes(external.slug)],
+              accessTokenTtl: EXTERNAL_ACCESS_TOKEN_TTL,
+            })),
+          ),
+        ],
         resourceSeedMode: "merge",
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
         scopes,
+        // External apps cannot ask the rack who may use them: tell them in the token.
+        async customAccessTokenClaims({ user, scopes: granted }) {
+          if (!user || !input.mcpAccesses) return {};
+          if (!granted.some((scope) => parseMcpScope(scope))) return {};
+          const mcpAccess = grantedMcpAccess(granted, await input.mcpAccesses(user.id));
+          return { mcp_access: mcpAccess };
+        },
       }),
       cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
     ],

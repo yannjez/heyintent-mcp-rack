@@ -53,6 +53,10 @@ const patchGroupSchema = z.object({
 });
 
 export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoutesDeps) {
+  /** Where MCP clients connect: the rack route, or the external app's own endpoint. */
+  const mcpUrl = (mcp: { slug: string; externalUrl: string | null }) =>
+    mcp.externalUrl ? `${mcp.externalUrl}/mcp` : `${deps.baseUrl}/mcp/${mcp.slug}`;
+
   async function currentUser(request: FastifyRequest) {
     return sessionUser(deps.auth, toWebRequest(request).headers);
   }
@@ -113,7 +117,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         version: mcp.version,
         access: accesses[mcp.slug],
         tools: mcp.tools,
-        url: `${deps.baseUrl}/mcp/${mcp.slug}`,
+        url: mcpUrl(mcp),
+        appUrl: mcp.externalUrl,
       }));
   });
 
@@ -131,7 +136,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const groups = links.filter((link) => link.mcpId === mcp.id);
       return {
         ...mcp,
-        url: `${deps.baseUrl}/mcp/${mcp.slug}`,
+        url: mcpUrl(mcp),
         userCount: new Set(
           groups.flatMap((link) => link.group.users.map((u) => u.userId)),
         ).size,

@@ -212,5 +212,10 @@ export interface McpDefinition {
   category?: string;
   capabilities: Capability[];
   settings?: McpSettingSpec[];
+  /**
+   * Hosted outside the rack: the rack only manages access and issues tokens
+   * for `<url>` (its UI) and `<url>/mcp`; it serves no endpoint for it.
+   */
+  external?: { url: string };
   register(server: McpServer, ctx: McpContext): void | Promise<void>;
 }

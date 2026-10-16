@@ -42,7 +42,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     error: (m, d) => app.log.error(d ?? {}, m),
   };
 
-  const registry = new McpRegistry(db, catalog, options.environment ?? process.env);
+  const registry = new McpRegistry(
+    db,
+    [...catalog, ...env.externalMcps],
+    options.environment ?? process.env,
+  );
   await registry.sync();
 
   const auth = createAuth(db, {
@@ -59,6 +63,21 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     userExists: async (email) =>
       Boolean(await db.user.findUnique({ where: { email }, select: { id: true } })),
     extraScopes: registry.definitions.flatMap((d) => mcpScopes(d.slug)),
+    externalResources: registry.definitions.flatMap((d) =>
+      d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
+    ),
+    // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
+    mcpAccesses: async (userId) => {
+      const [accesses, enabled] = await Promise.all([
+        registry.userAccesses(userId),
+        db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
+      ]);
+      const slugs = new Set(enabled.map((mcp) => mcp.slug));
+      for (const slug of Object.keys(accesses)) {
+        if (!slugs.has(slug)) delete accesses[slug];
+      }
+      return accesses;
+    },
   });
 
   await app.register(fastifyCors, {

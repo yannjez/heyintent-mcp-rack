@@ -106,6 +106,23 @@ Chaque MCP déclare dans `settings` la variable qu'il attend (`SITE_PUBLIC_API_U
 Variable absente = **mode démo** sur des données factices. Changer une valeur demande un
 redémarrage de `api-rack`. La liste complète est dans [.env.example](.env.example).
 
+### MCP externes
+
+Une application hébergée ailleurs (son UI et son endpoint MCP) peut déléguer la connexion
+au rack. On la déclare dans `EXTERNAL_MCPS` (tableau JSON `slug`, `name`, `url`,
+`description` et `category` facultatifs). Le rack :
+
+- l'enregistre comme un MCP : visible dans l'admin, affectable à des groupes et aux
+  utilisateurs, désactivable ;
+- déclare deux ressources OAuth, `<url>` (l'UI) et `<url>/mcp`, avec les scopes
+  `mcp:<slug>:read|write` et des access tokens de 15 minutes ;
+- ajoute aux access tokens la claim `mcp_access` (`{"<slug>": "read" | "write"}`) : les scopes
+  demandés, plafonnés par l'accès de l'utilisateur dans le rack.
+
+L'application vérifie elle-même le JWT avec la JWKS du rack (`iss` = `<BETTER_AUTH_URL>/api/auth`,
+`aud` = sa propre ressource) puis lit `mcp_access`. Le rack ne sert pas de route
+`/mcp/<slug>` pour elle, et les clés `rk_…` ne s'y appliquent pas.
+
 ## Commandes
 
 ```bash
@@ -142,9 +159,9 @@ anciens JWT doivent se reconnecter. Garder ensuite `BETTER_AUTH_SECRET` stable.
    `https://mcp-rack.vps02.heyintent.com:3000` : Coolify termine le HTTPS et transmet
    les requêtes au port interne 3000. L'URL publique reste
    `https://mcp-rack.vps02.heyintent.com`.
-4. Vérifier que `SERVICE_URL_APP_3000` contient cette URL publique HTTPS, sans `:3000`
-   ni slash final. `BETTER_AUTH_URL` reprend exactement cette variable. Utiliser
-   `SERVICE_URL_…` (avec schéma), et non `SERVICE_FQDN_…` (nom d'hôte).
+4. `BETTER_AUTH_URL` vaut `https://mcp-rack.vps02.heyintent.com` par défaut dans le compose
+   (HTTPS, sans `:3000` ni slash final). Pour un autre domaine, définir `BETTER_AUTH_URL`
+   dans Coolify : `SERVICE_URL_APP_3000` n'est pas mis à jour quand le domaine change.
 5. Coolify génère `SERVICE_PASSWORD_POSTGRES` et `SERVICE_BASE64_64_AUTH`. Conserver
    ces valeurs entre les déploiements : le secret d'authentification chiffre aussi
    les clés JWT et, par défaut, les secrets MCP. Si le mot de passe PostgreSQL est

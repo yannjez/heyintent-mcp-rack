@@ -1,8 +1,44 @@
+import { defineExternalMcp, type McpDefinition } from "@rack/mcp-kit";
+
 function list(value: string | undefined) {
   return (value ?? "")
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+}
+
+/**
+ * `EXTERNAL_MCPS`: JSON array of apps hosted elsewhere that sign in through the
+ * rack, e.g. `[{"slug":"veille-ao","name":"Veille AO","url":"https://ao.example.com"}]`.
+ */
+export function parseExternalMcps(value: string | undefined): McpDefinition[] {
+  if (!value?.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("EXTERNAL_MCPS must be a JSON array");
+  }
+  if (!Array.isArray(parsed)) throw new Error("EXTERNAL_MCPS must be a JSON array");
+  return parsed.map((entry: Record<string, unknown>) => {
+    const text = (key: string) =>
+      typeof entry?.[key] === "string" ? (entry[key] as string) : undefined;
+    const slug = text("slug");
+    const name = text("name");
+    const url = text("url");
+    if (!slug || !name || !url) {
+      throw new Error("Each EXTERNAL_MCPS entry needs slug, name and url");
+    }
+    const description = text("description");
+    const category = text("category");
+    return defineExternalMcp({
+      slug,
+      name,
+      url,
+      ...(description ? { description } : {}),
+      ...(category ? { category } : {}),
+    });
+  });
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env) {
@@ -40,6 +76,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env) {
       imageModel: source.OPENROUTER_IMAGE_MODEL ?? "google/gemini-2.5-flash-image",
     },
     githubToken: source.GITHUB_TOKEN ?? "",
+    externalMcps: parseExternalMcps(source.EXTERNAL_MCPS),
     webDist: source.WEB_DIST ?? "",
     /** Dev only: where the Vite UI lives, so /login and /consent can be reached from the API origin. */
     webDevOrigin:

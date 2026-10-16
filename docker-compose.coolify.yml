@@ -32,6 +32,7 @@ services:
       - SITE_PUBLIC_API_URL=${SITE_PUBLIC_API_URL:-}
       - SITE_PUBLIC_API_TOKEN=${SITE_PUBLIC_API_TOKEN:-}
       - SAMPLE_GITHUB_TOKEN=${SAMPLE_GITHUB_TOKEN:-}
+      - EXTERNAL_MCPS=${EXTERNAL_MCPS:-}
     depends_on:
       postgres:
         condition: service_healthy
