@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.aws
+**/node_modules
+**/dist
+**/.turbo
+**/.vite
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+packages/database/src/generated

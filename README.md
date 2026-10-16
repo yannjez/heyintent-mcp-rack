@@ -132,3 +132,32 @@ anciens JWT doivent se reconnecter. Garder ensuite `BETTER_AUTH_SECRET` stable.
 - `BETTER_AUTH_URL` doit être en HTTPS hors loopback (exigence du plugin MCP) ; SMTP obligatoire,
   les codes OTP ne sont jamais loggés en production.
 - Appliquer les migrations avec `pnpm --filter @rack/database migrate:deploy`.
+
+### Déploiement Coolify
+
+1. Créer une application depuis ce dépôt avec le build pack **Docker Compose**.
+2. Choisir `/docker-compose.coolify.yml` comme fichier Compose (ne pas le combiner avec
+   `docker-compose.yml`, réservé au PostgreSQL de développement).
+3. Dans le service `app`, configurer le domaine
+   `https://mcp-rack.vps02.heyintent.com:3000` : Coolify termine le HTTPS et transmet
+   les requêtes au port interne 3000. L'URL publique reste
+   `https://mcp-rack.vps02.heyintent.com`.
+4. Vérifier que `SERVICE_URL_APP_3000` contient cette URL publique HTTPS, sans `:3000`
+   ni slash final. `BETTER_AUTH_URL` reprend exactement cette variable. Utiliser
+   `SERVICE_URL_…` (avec schéma), et non `SERVICE_FQDN_…` (nom d'hôte).
+5. Coolify génère `SERVICE_PASSWORD_POSTGRES` et `SERVICE_BASE64_64_AUTH`. Conserver
+   ces valeurs entre les déploiements : le secret d'authentification chiffre aussi
+   les clés JWT et, par défaut, les secrets MCP. Si le mot de passe PostgreSQL est
+   remplacé manuellement, utiliser des caractères compatibles avec une URL de connexion.
+6. Renseigner `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`
+   et `SMTP_FROM` pour recevoir les codes de connexion en production. Ajuster
+   `ADMIN_EMAILS` et `ALLOWED_EMAIL_DOMAINS`, puis les variables des services nécessaires
+   (`OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `SITE_PUBLIC_API_URL`…).
+7. Déployer. L'image compile l'API et l'interface ; à chaque démarrage, elle applique
+   les migrations Prisma avant de lancer l'API. Le compte listé dans `ADMIN_EMAILS`
+   devient admin à sa première connexion, sans seed de production.
+
+Le healthcheck vérifie `/health`. PostgreSQL utilise un volume persistant et n'expose
+aucun port sur l'hôte. Aucun secret du `.env` local n'est copié dans l'image.
+
+Référence : [Docker Compose dans Coolify](https://coolify.io/docs/applications/builds/docker-compose).

@@ -1,0 +1,55 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      - SERVICE_URL_APP_3000
+      - DATABASE_URL=postgresql://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/heyintent_rack
+      - BETTER_AUTH_URL=${SERVICE_URL_APP_3000}
+      - BETTER_AUTH_SECRET=${SERVICE_BASE64_64_AUTH}
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=3000
+      - WEB_DIST=/app/apps/web-rack/dist
+      - ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS:-heyintent.com}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-yann@heyintent.com}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-Intent Ressource Rack <no-reply@heyintent.com>}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_DEFAULT_MODEL=${OPENROUTER_DEFAULT_MODEL:-anthropic/claude-sonnet-4.5}
+      - OPENROUTER_ALLOWED_MODELS=${OPENROUTER_ALLOWED_MODELS:-}
+      - OPENROUTER_IMAGE_MODEL=${OPENROUTER_IMAGE_MODEL:-google/gemini-2.5-flash-image}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - SITE_PUBLIC_API_URL=${SITE_PUBLIC_API_URL:-}
+      - SITE_PUBLIC_API_TOKEN=${SITE_PUBLIC_API_TOKEN:-}
+      - SAMPLE_GITHUB_TOKEN=${SAMPLE_GITHUB_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=heyintent_rack
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
+    volumes:
+      - heyintent-rack-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d heyintent_rack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  heyintent-rack-postgres-data:
