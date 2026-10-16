@@ -116,6 +116,9 @@ au rack. On la déclare dans `EXTERNAL_MCPS` (tableau JSON `slug`, `name`, `url`
   utilisateurs, désactivable ;
 - déclare deux ressources OAuth, `<url>` (l'UI) et `<url>/mcp`, avec les scopes
   `mcp:<slug>:read|write` et des access tokens de 15 minutes ;
+- relie ces ressources à tous les clients OAuth (le contrôle par client reste actif) : les
+  nouveaux à l'enregistrement (`clientRegistrationDefaultResources`, CIMD compris), ceux qui
+  existaient déjà au démarrage du rack ;
 - ajoute aux access tokens la claim `mcp_access` (`{"<slug>": "read" | "write"}`) : les scopes
   demandés, plafonnés par l'accès de l'utilisateur dans le rack.
 

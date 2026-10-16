@@ -11,7 +11,11 @@ import Fastify, {
 import { existsSync } from "node:fs";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerKeyRoutes } from "./keys/routes.js";
-import { createAuth } from "./auth/auth.js";
+import {
+  createAuth,
+  externalResourceIdentifiers,
+  linkClientsToResources,
+} from "./auth/auth.js";
 import { createOtpSender, type OtpSender } from "./auth/email.js";
 import type { Env } from "./env.js";
 import { sendWebResponse, toWebRequest } from "./http.js";
@@ -49,6 +53,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   );
   await registry.sync();
 
+  const externalResources = registry.definitions.flatMap((d) =>
+    d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
+  );
   const auth = createAuth(db, {
     baseUrl: env.baseUrl,
     secret: env.secret,
@@ -63,9 +70,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     userExists: async (email) =>
       Boolean(await db.user.findUnique({ where: { email }, select: { id: true } })),
     extraScopes: registry.definitions.flatMap((d) => mcpScopes(d.slug)),
-    externalResources: registry.definitions.flatMap((d) =>
-      d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
-    ),
+    externalResources,
     // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
     mcpAccesses: async (userId) => {
       const [accesses, enabled] = await Promise.all([
@@ -79,6 +84,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       return accesses;
     },
   });
+
+  // Resource rows are seeded when Better Auth initializes; then give clients
+  // registered before an external app was declared access to its resources.
+  await auth.$context;
+  const linked = await linkClientsToResources(db, externalResourceIdentifiers(externalResources));
+  if (linked > 0) log.info("linked existing OAuth clients to external resources", { linked });
 
   await app.register(fastifyCors, {
     origin: [env.baseUrl],
