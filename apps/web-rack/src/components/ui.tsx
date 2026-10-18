@@ -59,6 +59,8 @@ const paths: Record<string, ReactNode> = {
     </>
   ),
   check: <path d="m5 12 4 4L19 7" />,
+  "arrow-left": <path d="M19 12H5m7-7-7 7 7 7" />,
+  "arrow-right": <path d="M5 12h14m-7-7 7 7-7 7" />,
   database: (
     <>
       <ellipse cx="12" cy="6" rx="8" ry="3" />

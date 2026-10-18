@@ -1,7 +1,11 @@
+import { useNavigate, useParams, Link } from "react-router";
+import { DetailPage } from "../../components/DetailPage";
+import { UserApplicationsAccess } from "../../components/ApplicationAccess";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type Access,
   type AdminGroup,
+  type AdminApplication,
   type AdminMcp,
   type AdminUser,
   api,
@@ -17,22 +21,20 @@ import { GrantChips } from "../../components/GrantChips";
 import {
   AccessPicker,
   ConfirmModal,
-  Drawer,
   Empty,
   Icon,
   KindBadge,
   McpIcon,
-  Modal,
   PageHead,
   Switch,
 } from "../../components/ui";
 
-function NewUserModal({
+function NewUserForm({
   onClose,
   onCreated,
 }: {
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (id: string) => void;
 }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -45,12 +47,11 @@ function NewUserModal({
     setBusy(true);
     setError(null);
     try {
-      await api("/api/admin/users", {
+      const created = await api<{ id: string }>("/api/admin/users", {
         method: "POST",
         body: JSON.stringify({ email, name, kind }),
       });
-      onCreated();
-      onClose();
+      onCreated(created.id);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -59,13 +60,17 @@ function NewUserModal({
   }
 
   return (
-    <Modal title="Nouvel utilisateur" onClose={onClose}>
+    <DetailPage
+      title="Nouvel utilisateur"
+      onClose={onClose}
+      backLabel="Retour aux utilisateurs"
+    >
       <form className="stack" onSubmit={submit} id="new-user">
         {error && <div className="alert error">{error}</div>}
         <p className="small muted">
-          Les comptes Intent se créent seuls à la première connexion. Créez ici les comptes
-          externes et clients : ils pourront ensuite se connecter par code OTP avec leur
-          propre adresse.
+          Les comptes Intent se créent seuls à la première connexion. Créez ici les
+          comptes externes et clients : ils pourront ensuite se connecter par code OTP
+          avec leur propre adresse.
         </p>
         <label className="field">
           Email
@@ -106,14 +111,15 @@ function NewUserModal({
           </button>
         </div>
       </form>
-    </Modal>
+    </DetailPage>
   );
 }
 
-function UserDrawer({
+function UserDetails({
   user,
   mcps,
   groups,
+  applications,
   meId,
   onClose,
   onChanged,
@@ -121,6 +127,7 @@ function UserDrawer({
   user: AdminUser;
   mcps: AdminMcp[];
   groups: AdminGroup[];
+  applications: AdminApplication[];
   meId: string;
   onClose: () => void;
   onChanged: () => void;
@@ -141,7 +148,7 @@ function UserDrawer({
     { kind: "user" } | { kind: "key"; key: ApiKeyRow } | null
   >(null);
 
-  /** Runs an admin call, surfaces its error in the drawer, and reports success. */
+  /** Runs an admin call, surfaces its error on the page, and reports success. */
   async function run(fn: () => Promise<unknown>): Promise<boolean> {
     setError(null);
     try {
@@ -174,7 +181,8 @@ function UserDrawer({
   const available = mcps.filter((mcp) => viaGroups.has(mcp.slug));
 
   return (
-    <Drawer
+    <DetailPage
+      backLabel="Retour aux utilisateurs"
       title={user.name || user.email}
       subtitle={user.email}
       onClose={onClose}
@@ -297,8 +305,8 @@ function UserDrawer({
               </div>
             )}
             <span className="hint">
-              Un compte peut appartenir à plusieurs groupes ; il n'accède qu'aux ressources
-              associées à au moins un de ses groupes, administrateurs compris.
+              Un compte peut appartenir à plusieurs groupes ; il n'accède qu'aux
+              ressources associées à au moins un de ses groupes, administrateurs compris.
             </span>
           </div>
         </section>
@@ -312,7 +320,8 @@ function UserDrawer({
           </div>
           {available.length === 0 ? (
             <div className="small muted">
-              Aucune ressource : ce compte n'appartient à aucun groupe associé à une ressource.
+              Aucune ressource : ce compte n'appartient à aucun groupe associé à une
+              ressource.
             </div>
           ) : (
             <div className="access-matrix">
@@ -350,6 +359,15 @@ function UserDrawer({
         </section>
 
         <section className="stack tight">
+          <h3>Applications accessibles</h3>
+          <UserApplicationsAccess
+            applications={applications}
+            user={user}
+            onChanged={onChanged}
+          />
+        </section>
+
+        <section className="stack tight">
           <h3>Clés API ({keys?.length ?? "…"})</h3>
           {keys && keys.length === 0 && <div className="small muted">Aucune clé.</div>}
           {keys?.map((key) => (
@@ -374,7 +392,7 @@ function UserDrawer({
           ))}
         </section>
       </div>
-    </Drawer>
+    </DetailPage>
   );
 }
 
@@ -384,24 +402,38 @@ export function AdminUsersPage({ meId }: { meId: string }) {
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [search, setSearch] = useState("");
   const [kind, setKind] = useState<UserKind | "all">("all");
-  const [selected, setSelected] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const navigate = useNavigate();
+  const { userId: selected } = useParams();
+  const creating = selected === "new";
+  const [applications, setApplications] = useState<AdminApplication[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
-    api<AdminUser[]>("/api/admin/users")
-      .then(setUsers)
-      .catch((e: Error) => setError(e.message));
-  }, []);
-  useEffect(() => {
-    reload();
-    api<AdminMcp[]>("/api/admin/mcps")
-      .then((list) => setMcps(list.filter((m) => m.loaded)))
-      .catch(() => {});
-    api<AdminGroup[]>("/api/admin/groups")
-      .then(setGroups)
-      .catch(() => {});
-  }, [reload]);
+    setLoading(true);
+    setError(null);
+    const usersRequest =
+      selected && !creating
+        ? api<AdminUser>(`/api/admin/users/${encodeURIComponent(selected)}`).then(
+            (user) => [user],
+          )
+        : api<AdminUser[]>("/api/admin/users");
+    Promise.all([
+      usersRequest,
+      api<AdminApplication[]>("/api/admin/applications"),
+      api<AdminMcp[]>("/api/admin/mcps"),
+      api<AdminGroup[]>("/api/admin/groups"),
+    ])
+      .then(([rows, apps, resources, groupRows]) => {
+        setUsers(rows);
+        setApplications(apps);
+        setMcps(resources.filter((mcp) => mcp.loaded));
+        setGroups(groupRows);
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [selected, creating]);
+  useEffect(reload, [reload]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -423,19 +455,56 @@ export function AdminUsersPage({ meId }: { meId: string }) {
   const current = users.find((u) => u.id === selected) ?? null;
   const names = Object.fromEntries(mcps.map((m) => [m.slug, m.name]));
 
+  if (creating)
+    return (
+      <NewUserForm
+        onClose={() => navigate("/admin/users")}
+        onCreated={(id) => navigate(`/admin/users/${encodeURIComponent(id)}`)}
+      />
+    );
+  if (selected)
+    return current ? (
+      <>
+        {error && <div className="alert error">{error}</div>}
+        <UserDetails
+          key={current.id}
+          user={current}
+          mcps={mcps}
+          groups={groups}
+          applications={applications}
+          meId={meId}
+          onClose={() => navigate("/admin/users")}
+          onChanged={reload}
+        />
+      </>
+    ) : (
+      <>
+        <Link className="btn ghost" to="/admin/users">
+          Retour aux utilisateurs
+        </Link>
+        <PageHead title="Utilisateur" />
+        {error ? (
+          <div className="alert error">{error}</div>
+        ) : (
+          <p className="muted">Chargement…</p>
+        )}
+      </>
+    );
+
   return (
     <>
       <PageHead
         eyebrow="Administration"
         title="Utilisateurs"
-        lead="Affectez des groupes à chaque compte pour lui donner accès aux ressources associées."
+        lead="Gérez les profils, les groupes et les accès aux applications et aux ressources."
         actions={
-          <button className="btn accent" onClick={() => setCreating(true)}>
+          <button className="btn accent" onClick={() => navigate("/admin/users/new")}>
             <Icon name="plus" /> Nouvel utilisateur
           </button>
         }
       />
       {error && <div className="alert error">{error}</div>}
+      {loading && <p className="muted">Chargement…</p>}
       <div className="card">
         <div className="card-head" style={{ gap: 10, flexWrap: "wrap" }}>
           <div className="segmented">
@@ -480,11 +549,19 @@ export function AdminUsersPage({ meId }: { meId: string }) {
                 {filtered.map((user) => (
                   <tr
                     key={user.id}
-                    className={`clickable ${selected === user.id ? "selected" : ""}`}
-                    onClick={() => setSelected(user.id)}
+                    className="clickable"
+                    onClick={() =>
+                      navigate(`/admin/users/${encodeURIComponent(user.id)}`)
+                    }
                   >
                     <td>
-                      <div className="primary">{user.name || "—"}</div>
+                      <Link
+                        className="primary"
+                        to={`/admin/users/${encodeURIComponent(user.id)}`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {user.name || user.email}
+                      </Link>
                       <div className="secondary">{user.email}</div>
                     </td>
                     <td>
@@ -501,9 +578,14 @@ export function AdminUsersPage({ meId }: { meId: string }) {
                       {user.groups.length ? (
                         <div className="chips">
                           {user.groups.map((group) => (
-                            <span key={group.id} className="badge off plain">
+                            <Link
+                              key={group.id}
+                              className="badge off plain"
+                              to={`/admin/groups/${encodeURIComponent(group.id)}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
                               {group.name}
-                            </span>
+                            </Link>
                           ))}
                         </div>
                       ) : (
@@ -547,17 +629,6 @@ export function AdminUsersPage({ meId }: { meId: string }) {
           </div>
         )}
       </div>
-      {current && (
-        <UserDrawer
-          user={current}
-          mcps={mcps}
-          groups={groups}
-          meId={meId}
-          onClose={() => setSelected(null)}
-          onChanged={reload}
-        />
-      )}
-      {creating && <NewUserModal onClose={() => setCreating(false)} onCreated={reload} />}
     </>
   );
 }

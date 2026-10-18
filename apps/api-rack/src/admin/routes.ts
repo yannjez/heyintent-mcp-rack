@@ -3,7 +3,11 @@ import type { Db } from "@rack/database";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import * as z from "zod";
-import { canAccessApplication } from "../auth/applications.js";
+import {
+  applicationAllowed,
+  canAccessApplication,
+  isRackApplication,
+} from "../auth/applications.js";
 import type { Auth } from "../auth/auth.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
@@ -128,6 +132,48 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       }));
   });
 
+  /** Applications available to the signed-in user; never expose OAuth credentials. */
+  app.get("/api/applications", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    if (user.banned) return [];
+    const clients = await deps.db.oauthClient.findMany({
+      orderBy: [{ name: "asc" }, { clientId: "asc" }],
+      select: {
+        clientId: true,
+        name: true,
+        uri: true,
+        disabled: true,
+        accessRestricted: true,
+        applicationAccesses: { where: { userId: user.id }, select: { allowed: true } },
+        applicationGroups: {
+          where: { group: { users: { some: { userId: user.id } } } },
+          select: { groupId: true },
+        },
+      },
+    });
+    return clients
+      .filter(
+        (client) =>
+          !isRackApplication(client, deps.baseUrl) && applicationAllowed(client),
+      )
+      .map(({ clientId, name, uri }) => {
+        let url: string | null = null;
+        try {
+          const parsed = new URL(uri ?? "");
+          if (
+            ["https:", "http:"].includes(parsed.protocol) &&
+            !parsed.username &&
+            !parsed.password
+          )
+            url = parsed.toString();
+        } catch {
+          /* Native clients may have no website. */
+        }
+        return { clientId, name, url };
+      });
+  });
+
   // ---------------------------------------------------------------- Applications
 
   app.get("/api/admin/applications", async (request, reply) => {
@@ -146,12 +192,14 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         applicationAccesses: { select: { userId: true, allowed: true } },
       },
     });
-    return clients.map(({ applicationGroups, applicationAccesses, ...client }) => ({
-      ...client,
-      disabled: client.disabled ?? false,
-      groupIds: applicationGroups.map((g) => g.groupId),
-      users: applicationAccesses,
-    }));
+    return clients
+      .filter((client) => !isRackApplication(client, deps.baseUrl))
+      .map(({ applicationGroups, applicationAccesses, ...client }) => ({
+        ...client,
+        disabled: client.disabled ?? false,
+        groupIds: applicationGroups.map((g) => g.groupId),
+        users: applicationAccesses,
+      }));
   });
 
   app.patch<{ Params: { clientId: string } }>(
@@ -160,6 +208,25 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       if (!(await requireAdmin(request, reply))) return;
       const parsed = z
         .strictObject({
+          name: z.string().trim().min(1).max(200).optional(),
+          uri: z
+            .string()
+            .url()
+            .max(2000)
+            .refine((value) => {
+              try {
+                const url = new URL(value);
+                return (
+                  ["https:", "http:"].includes(url.protocol) &&
+                  !url.username &&
+                  !url.password
+                );
+              } catch {
+                return false;
+              }
+            }, "Use an HTTP(S) application URL without credentials")
+            .nullable()
+            .optional(),
           disabled: z.boolean().optional(),
           accessRestricted: z.boolean().optional(),
           groupIds: z.array(z.string().min(1)).max(100).optional(),
@@ -172,8 +239,11 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       if (!parsed.success) return invalid(reply, parsed.error);
       const { clientId } = request.params;
       const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
-      if (!client) return jsonError(reply, 404, "Unknown application");
-      const { disabled, accessRestricted, groupIds, users } = parsed.data;
+      if (!client || isRackApplication(client, deps.baseUrl))
+        return jsonError(reply, 404, "Unknown application");
+      const { name, uri, disabled, accessRestricted, groupIds, users } = parsed.data;
+      if (uri && isRackApplication({ clientId, uri }, deps.baseUrl))
+        return jsonError(reply, 400, "Rack cannot be used as an application URL");
       if (users && new Set(users.map((u) => u.userId)).size !== users.length)
         return jsonError(reply, 400, "Duplicate user");
       if (groupIds) {
@@ -191,6 +261,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         deps.db.oauthClient.update({
           where: { clientId },
           data: {
+            ...(name !== undefined ? { name } : {}),
+            ...(uri !== undefined ? { uri } : {}),
             ...(disabled !== undefined ? { disabled } : {}),
             ...(accessRestricted !== undefined ? { accessRestricted } : {}),
             ...(groupIds
@@ -210,6 +282,76 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         deps.db.oauthConsent.deleteMany({ where: { clientId } }),
       ]);
       return { clientId, updated: true };
+    },
+  );
+
+  function clearApplicationGrants(clientId: string) {
+    return [
+      deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
+      deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
+      deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+    ];
+  }
+
+  app.put<{ Params: { id: string; clientId: string } }>(
+    "/api/admin/users/:id/applications/:clientId",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      const parsed = z
+        .strictObject({ access: z.enum(["allow", "deny", "default"]) })
+        .safeParse(request.body);
+      if (!parsed.success) return invalid(reply, parsed.error);
+      const { id: userId, clientId } = request.params;
+      const [user, client] = await Promise.all([
+        deps.db.user.findUnique({ where: { id: userId }, select: { id: true } }),
+        deps.db.oauthClient.findUnique({
+          where: { clientId },
+          select: { id: true, clientId: true, uri: true },
+        }),
+      ]);
+      if (!user || !client || isRackApplication(client, deps.baseUrl))
+        return jsonError(reply, 404, "Unknown user or application");
+      await deps.db.$transaction([
+        parsed.data.access === "default"
+          ? deps.db.applicationAccess.deleteMany({ where: { userId, clientId } })
+          : deps.db.applicationAccess.upsert({
+              where: { clientId_userId: { clientId, userId } },
+              create: { clientId, userId, allowed: parsed.data.access === "allow" },
+              update: { allowed: parsed.data.access === "allow" },
+            }),
+        ...clearApplicationGrants(clientId),
+      ]);
+      return { userId, clientId, access: parsed.data.access };
+    },
+  );
+
+  app.put<{ Params: { id: string; clientId: string } }>(
+    "/api/admin/applications/:clientId/groups/:id",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      const parsed = z.strictObject({ enabled: z.boolean() }).safeParse(request.body);
+      if (!parsed.success) return invalid(reply, parsed.error);
+      const { id: groupId, clientId } = request.params;
+      const [group, client] = await Promise.all([
+        deps.db.mcpGroup.findUnique({ where: { id: groupId }, select: { id: true } }),
+        deps.db.oauthClient.findUnique({
+          where: { clientId },
+          select: { id: true, clientId: true, uri: true },
+        }),
+      ]);
+      if (!group || !client || isRackApplication(client, deps.baseUrl))
+        return jsonError(reply, 404, "Unknown group or application");
+      await deps.db.$transaction([
+        parsed.data.enabled
+          ? deps.db.applicationGroup.upsert({
+              where: { clientId_groupId: { clientId, groupId } },
+              create: { clientId, groupId },
+              update: {},
+            })
+          : deps.db.applicationGroup.deleteMany({ where: { clientId, groupId } }),
+        ...clearApplicationGrants(clientId),
+      ]);
+      return { clientId, groupId, enabled: parsed.data.enabled };
     },
   );
 
@@ -257,12 +399,12 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   // ---------------------------------------------------------------- Users
 
-  app.get("/api/admin/users", async (request, reply) => {
-    if (!(await requireAdmin(request, reply))) return;
+  async function presentUsers(userId?: string) {
     const [users, accesses, keys, groups] = await Promise.all([
       deps.db.user.findMany({
         orderBy: { createdAt: "desc" },
         take: 500,
+        ...(userId ? { where: { id: userId } } : {}),
         include: { groups: true },
       }),
       deps.db.mcpAccess.findMany({ include: { mcp: { select: { slug: true } } } }),
@@ -306,6 +448,18 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       }),
       keyCount: keysByUser.get(user.id) ?? 0,
     }));
+  }
+
+  app.get("/api/admin/users", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    return presentUsers();
+  });
+
+  app.get<{ Params: { id: string } }>("/api/admin/users/:id", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const [user] = await presentUsers(request.params.id);
+    if (!user) return jsonError(reply, 404, "Unknown user");
+    return user;
   });
 
   /** Pre-create an account (external or client users are not on the email allowlist). */
@@ -481,6 +635,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     if (!(await requireAdmin(request, reply))) return;
     const groups = await deps.db.mcpGroup.findMany({ orderBy: { name: "asc" } });
     return Promise.all(groups.map(presentGroup));
+  });
+
+  app.get<{ Params: { id: string } }>("/api/admin/groups/:id", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const group = await deps.db.mcpGroup.findUnique({ where: { id: request.params.id } });
+    if (!group) return jsonError(reply, 404, "Unknown group");
+    return presentGroup(group);
   });
 
   app.post("/api/admin/groups", async (request, reply) => {

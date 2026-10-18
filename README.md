@@ -89,14 +89,28 @@ Les deux modes produisent la même `Identity` côté serveur (`userId`, `grants.
 Accès effectif = disponibilité via un groupe commun ∩ droits individuels (lecture par défaut)
 ∩ niveau porté par la credential. Sans groupe commun, le MCP répond 403. En lecture, seuls les tools `readOnlyHint: true` sont servis.
 
-## Gérer les applications
+## Applications, ressources et espace personnel
 
-« Administration → Applications » liste les clients OAuth déjà enregistrés (DCR ou CIMD),
-comme Coding factory. Une demande `openid profile email` permet de se connecter sans
+Après connexion, l'accueil réunit « Mes applications » et « Mes ressources ». Les applications
+visibles sont celles autorisées pour le compte courant. Rack lui-même est exclu du catalogue,
+y compris lorsqu’un ancien client OAuth pointe vers son adresse. Le bouton « Ouvrir l'application »
+utilise l'adresse publique configurée sur sa fiche ; les clients sans site restent listés avec
+une indication pour les ouvrir depuis leur propre interface. Les ressources conservent leur
+niveau de lecture ou d'écriture et leurs instructions de connexion MCP.
+
+« Administration → Applications et ressources » propose un catalogue commun, avec recherche
+et filtres par type. Chaque application et ressource possède sa fiche avec une URL directe.
+Les fiches utilisateur et groupe, ainsi que leurs formulaires de création, sont également des
+pages complètes. Depuis une fiche utilisateur, on gère les groupes, les ressources, les exceptions
+d'accès aux applications et les clés API ; depuis une fiche groupe, on gère les membres et les
+applications et ressources associées.
+
+Le catalogue liste les clients OAuth déjà enregistrés (DCR ou CIMD), comme Coding factory. Une demande `openid profile email` permet de se connecter sans
 sélectionner de ressource MCP. `offline_access` permet aussi le renouvellement du jeton.
 
 Pour chaque application, l'administrateur peut :
 
+- définir son nom et l'adresse publique utilisée dans « Mes applications » ;
 - activer ou désactiver les connexions ;
 - autoriser tous les utilisateurs (valeur par défaut, y compris pour les clients existants) ;
 - restreindre l'accès aux groupes sélectionnés et aux utilisateurs explicitement autorisés ;
@@ -115,6 +129,17 @@ cette application : Rack ne peut pas la fermer directement.
 
 La migration `20261018120000_application_access` doit être appliquée avant de démarrer cette
 version (`pnpm --filter @rack/database migrate:deploy`, automatique avec l'image Docker).
+
+### Reprendre une connexion OAuth expirée
+
+L'envoi d'un code OTP est indépendant de la demande OAuth en cours. Le contexte signé
+n'est vérifié qu'au moment de se connecter et de donner le consentement. Les anciens clients
+web qui joignent encore `oauth_query` à l'envoi du code restent compatibles.
+
+Si la demande a expiré ou si le serveur répond `invalid_signature`, l'écran propose
+« Reprendre la connexion ». Cette action repasse par le serveur d'autorisation pour obtenir
+un contexte signé à jour, en conservant l'état, le nonce et PKCE. La reprise est manuelle :
+Rack ne suit pas un retour répété vers sa propre page de connexion ou de consentement.
 
 ## Ajouter un MCP
 

@@ -2,6 +2,12 @@ import { type FormEvent, useState } from "react";
 import { useLocation } from "react-router";
 import { authClient } from "../auth-client";
 import { Icon } from "../components/ui";
+import {
+  authErrorMessage,
+  isInvalidOAuthQuery,
+  oauthRequestExpired,
+  restartOAuthPath,
+} from "../oauth-recovery";
 import { finishOAuth } from "../oauth";
 
 type Step = "email" | "otp";
@@ -15,50 +21,106 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const oauthClientId = new URLSearchParams(location.search).get("client_id");
   const inOAuthFlow = oauthClientId !== null;
+  const [invalidOAuth, setInvalidOAuth] = useState(() =>
+    oauthRequestExpired(location.search),
+  );
+  const restartPath = restartOAuthPath(location.search);
+  const canContinue = !inOAuthFlow || !invalidOAuth;
 
   async function sendCode(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    const { error } = await authClient.emailOtp.sendVerificationOtp({
-      email,
-      type: "sign-in",
-    });
-    setBusy(false);
-    if (error) return setError(error.message ?? "Impossible d'envoyer le code.");
-    setStep("otp");
+    try {
+      const result = await authClient.emailOtp.sendVerificationOtp({
+        email,
+        type: "sign-in",
+      });
+      if (result.error) {
+        if (isInvalidOAuthQuery(result.error)) setInvalidOAuth(true);
+        setError(
+          authErrorMessage(
+            result.error,
+            "Impossible d’envoyer le code. Réessayez dans un instant.",
+          ),
+        );
+        return;
+      }
+      setStep("otp");
+    } catch (e) {
+      setError(
+        authErrorMessage(
+          e,
+          "Impossible de joindre le serveur. Réessayez dans un instant.",
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function verify(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    const { data, error } = await authClient.signIn.emailOtp({ email, otp });
-    if (error) {
+    try {
+      const result = await authClient.signIn.emailOtp({ email, otp });
+      if (result.error) {
+        if (isInvalidOAuthQuery(result.error)) setInvalidOAuth(true);
+        setError(authErrorMessage(result.error, "Code invalide."));
+        return;
+      }
+      const next = (result.data as { redirect?: boolean; url?: string } | null) ?? {};
+      if (inOAuthFlow && next.redirect && next.url) {
+        const target = new URL(next.url, window.location.origin);
+        if (target.origin === window.location.origin && target.pathname === "/login") {
+          setInvalidOAuth(true);
+          setError(
+            "La connexion n’a pas pu aboutir. Reprenez la demande depuis l’application.",
+          );
+          return;
+        }
+        const scopes = new URLSearchParams(location.search).get("scope") ?? "";
+        if (scopes.split(/\s+/).some((scope) => scope.startsWith("mcp:")))
+          await finishOAuth(next.url, oauthClientId);
+        else window.location.href = target.toString();
+        return;
+      }
+      if (inOAuthFlow) {
+        setInvalidOAuth(true);
+        setError(
+          "Impossible de poursuivre la connexion à l’application. Reprenez la demande.",
+        );
+        return;
+      }
+      const from = (location.state as { from?: string } | null)?.from;
+      const target = new URL(
+        typeof from === "string" ? from : "/",
+        window.location.origin,
+      );
+      window.location.href =
+        target.origin === window.location.origin ? target.toString() : "/";
+    } catch (e) {
+      setError(
+        authErrorMessage(
+          e,
+          "Impossible de joindre le serveur. Réessayez dans un instant.",
+        ),
+      );
+    } finally {
       setBusy(false);
-      return setError(error.message ?? "Code invalide.");
     }
-    // In an OAuth flow the oauthProviderClient plugin attached the signed
-    // query, so the server resumes the authorization and answers with the next
-    // hop (consent page or client callback).
-    const next = (data as { redirect?: boolean; url?: string } | null) ?? {};
-    if (inOAuthFlow && next.redirect && next.url) {
-      // Either the consent page, or straight to the client when consent was
-      // already given: finishOAuth only intercepts loopback callbacks.
-      await finishOAuth(next.url, oauthClientId);
-      return;
-    }
-    if (inOAuthFlow) {
-      setBusy(false);
-      return setError("Impossible de poursuivre l'autorisation du client MCP.");
-    }
-    window.location.href = "/";
   }
 
   return (
     <div className="auth">
       <section className="auth-brand">
-        <a className="brand" href="https://heyintent.com" target="_blank" rel="noreferrer">
+        <a
+          className="brand"
+          href="https://heyintent.com"
+          target="_blank"
+          rel="noreferrer"
+        >
           <img src="/intent-logo.svg" alt="Intent" className="brand-logo" />
           <span className="brand-sep" />
           <span className="brand-text">
@@ -96,7 +158,9 @@ export function LoginPage() {
             </li>
           </ul>
         </div>
-        <div className="foot">© Intent · Des agents IA qui transforment votre entreprise</div>
+        <div className="foot">
+          © Intent · Des agents IA qui transforment votre entreprise
+        </div>
       </section>
 
       <section className="auth-form">
@@ -105,61 +169,84 @@ export function LoginPage() {
             <h1 style={{ fontSize: 24 }}>Connexion</h1>
             <p className="muted" style={{ marginTop: 6 }}>
               {inOAuthFlow
-                ? "Un client MCP demande l'accès à votre compte. Connectez-vous pour continuer."
+                ? "Une application demande à vous connecter avec votre compte Rack."
                 : "Recevez un code à usage unique par email."}
             </p>
           </div>
-          {error && <div className="alert error">{error}</div>}
-          {step === "email" ? (
-            <form className="stack" onSubmit={sendCode}>
-              <label className="field">
-                Email
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="prenom@heyintent.com"
-                  required
-                  autoFocus
-                />
-              </label>
-              <button className="btn accent" disabled={busy}>
-                Recevoir un code
-              </button>
-              <p className="tiny muted">
-                Comptes Intent, ou comptes externes et clients créés par un administrateur.
-              </p>
-            </form>
-          ) : (
-            <form className="stack" onSubmit={verify}>
-              <div className="alert info">
-                Code envoyé à <strong>&nbsp;{email}</strong>
-              </div>
-              <label className="field">
-                Code à 6 chiffres
-                <input
-                  type="text"
-                  className="otp"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  required
-                  autoFocus
-                />
-              </label>
-              <button className="btn accent" disabled={busy || otp.length !== 6}>
-                Se connecter
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => setStep("email")}
-              >
-                Changer d'email
-              </button>
-            </form>
+          {error && (
+            <div className="alert error" role="alert">
+              {error}
+            </div>
           )}
+          {invalidOAuth && restartPath && (
+            <div className="stack tight">
+              {!error && (
+                <div className="alert error" role="alert">
+                  La demande de connexion a expiré ou n’est plus valide.
+                </div>
+              )}
+              <a className="btn accent" href={restartPath}>
+                Reprendre la connexion
+              </a>
+              <a className="btn ghost" href="/login">
+                Se connecter à Rack uniquement
+              </a>
+            </div>
+          )}
+          {canContinue &&
+            (step === "email" ? (
+              <form className="stack" onSubmit={sendCode}>
+                <label className="field">
+                  Email
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="prenom@heyintent.com"
+                    required
+                    autoFocus
+                  />
+                </label>
+                <button className="btn accent" disabled={busy}>
+                  Recevoir un code
+                </button>
+                <p className="tiny muted">
+                  Comptes Intent, ou comptes externes et clients créés par un
+                  administrateur.
+                </p>
+              </form>
+            ) : (
+              <form className="stack" onSubmit={verify}>
+                <div className="alert info">
+                  Code envoyé à <strong>&nbsp;{email}</strong>
+                </div>
+                <label className="field">
+                  Code à 6 chiffres
+                  <input
+                    type="text"
+                    className="otp"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    value={otp}
+                    onChange={(e) =>
+                      setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    required
+                    autoFocus
+                  />
+                </label>
+                <button className="btn accent" disabled={busy || otp.length !== 6}>
+                  Se connecter
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setStep("email")}
+                >
+                  Changer d'email
+                </button>
+              </form>
+            ))}
         </div>
       </section>
     </div>

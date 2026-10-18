@@ -73,7 +73,9 @@ function ConnectModal({ mcp, onClose }: { mcp: UserMcp; onClose: () => void }) {
               connecter et vous demande de confirmer le niveau d'accès. Rien à
               copier-coller.
             </p>
-            <Snippet code={`claude mcp add --transport http ${suggestedName} ${mcp.url}`} />
+            <Snippet
+              code={`claude mcp add --transport http ${suggestedName} ${mcp.url}`}
+            />
             <h3>Avec une clé API</h3>
             <p className="small muted">
               Créez une clé dans « Mes clés API », puis passez-la dans l'en-tête
@@ -155,7 +157,7 @@ function ConnectModal({ mcp, onClose }: { mcp: UserMcp; onClose: () => void }) {
   );
 }
 
-export function McpsPage({ me }: { me: Me }) {
+export function McpsPage({ me, showWelcome = true }: { me: Me; showWelcome?: boolean }) {
   const [mcps, setMcps] = useState<UserMcp[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState<UserMcp | null>(null);
@@ -171,28 +173,30 @@ export function McpsPage({ me }: { me: Me }) {
 
   return (
     <>
-      <div className="hero">
-        <h1>Bonjour {me.name?.split(" ")[0] || me.email.split("@")[0]}</h1>
-        <p>
-          Branchez Claude Code, Cursor ou tout client MCP sur les ressources Intent : chaque
-          ressource ci-dessous vous est affectée avec un niveau d'accès précis, en lecture ou en
-          écriture.
-        </p>
-        <div className="stats">
-          <div className="stat">
-            <strong>{mcps?.length ?? "–"}</strong>
-            <span>Ressources affectées</span>
-          </div>
-          <div className="stat">
-            <strong>{mcps ? writable : "–"}</strong>
-            <span>en écriture</span>
-          </div>
-          <div className="stat">
-            <strong>{mcps ? tools : "–"}</strong>
-            <span>outils disponibles</span>
+      {showWelcome && (
+        <div className="hero">
+          <h1>Bonjour {me.name?.split(" ")[0] || me.email.split("@")[0]}</h1>
+          <p>
+            Branchez Claude Code, Cursor ou tout client MCP sur les ressources Intent :
+            chaque ressource ci-dessous vous est affectée avec un niveau d'accès précis,
+            en lecture ou en écriture.
+          </p>
+          <div className="stats">
+            <div className="stat">
+              <strong>{mcps?.length ?? "–"}</strong>
+              <span>Ressources affectées</span>
+            </div>
+            <div className="stat">
+              <strong>{mcps ? writable : "–"}</strong>
+              <span>en écriture</span>
+            </div>
+            <div className="stat">
+              <strong>{mcps ? tools : "–"}</strong>
+              <span>outils disponibles</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <PageHead
         title="Mes ressources"
@@ -202,8 +206,8 @@ export function McpsPage({ me }: { me: Me }) {
       {mcps && mcps.length === 0 && (
         <div className="card">
           <Empty icon="shield" title="Aucune ressource ne vous est affectée">
-            Demandez à un administrateur de vous ouvrir l'accès aux ressources dont vous avez
-            besoin.
+            Demandez à un administrateur de vous ouvrir l'accès aux ressources dont vous
+            avez besoin.
           </Empty>
         </div>
       )}

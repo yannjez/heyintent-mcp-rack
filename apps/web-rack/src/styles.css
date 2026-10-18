@@ -1522,3 +1522,75 @@ td .secondary {
     padding: 24px 20px;
   }
 }
+
+/* Catalogue and full-page management. */
+.catalogue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.catalogue-toolbar input {
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+.catalogue-card {
+  display: flex;
+  flex-direction: column;
+}
+.catalogue-card .card-body {
+  flex: 1;
+}
+.catalogue-card .card-foot {
+  justify-content: flex-end;
+}
+.catalogue-card h2 a {
+  color: inherit;
+  text-decoration: none;
+}
+.catalogue-card h2 a:hover {
+  text-decoration: underline;
+}
+.catalogue-description {
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.detail-back {
+  margin-bottom: 20px;
+}
+.detail-card .stack > section + section {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+.personal-section {
+  margin-top: 36px;
+  scroll-margin-top: 80px;
+}
+#mes-applications {
+  scroll-margin-top: 80px;
+}
+@media (max-width: 560px) {
+  .catalogue-toolbar .segmented {
+    display: flex;
+    width: 100%;
+  }
+  .catalogue-toolbar .segmented button {
+    flex: 1;
+    padding-inline: 10px;
+  }
+  .catalogue-toolbar input {
+    max-width: none;
+  }
+  .detail-card .row > .field {
+    min-width: 100%;
+  }
+  .detail-card .access-row select {
+    max-width: 100%;
+  }
+}
+
+.btn {
+  text-decoration: none;
+}

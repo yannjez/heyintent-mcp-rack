@@ -271,6 +271,7 @@ export function createAuth(db: Db | object, input: AuthInput) {
   const handler = auth.handler;
   auth.handler = async (request: Request) => {
     const url = new URL(request.url);
+    let authRequest = request;
     let clientId = url.searchParams.get("client_id") ?? undefined;
     if (request.method === "POST") {
       const copy = request.clone();
@@ -293,6 +294,22 @@ export function createAuth(db: Db | object, input: AuthInput) {
         }
       } catch {
         /* Let Better Auth report malformed bodies. */
+      }
+      // Older web bundles attach oauth_query to every POST, including OTP
+      // delivery. Do not let an expired OAuth login page prevent sending a code.
+      // Sign-in and consent still verify the provider's signed query as usual.
+      if (
+        url.pathname.endsWith("/email-otp/send-verification-otp") &&
+        body &&
+        typeof body === "object" &&
+        "oauth_query" in body
+      ) {
+        delete body.oauth_query;
+        const headers = new Headers(request.headers);
+        headers.set("content-type", "application/json");
+        headers.delete("content-length");
+        authRequest = new Request(request, { headers, body: JSON.stringify(body) });
+        clientId = undefined;
       }
       const tokenRequest = url.pathname.endsWith("/oauth2/token");
       if (tokenRequest) {
@@ -324,7 +341,7 @@ export function createAuth(db: Db | object, input: AuthInput) {
         }
       }
     }
-    return oauthClient.run(clientId, () => handler(request));
+    return oauthClient.run(clientId, () => handler(authRequest));
   };
   return auth;
 }

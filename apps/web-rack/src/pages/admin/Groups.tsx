@@ -1,6 +1,10 @@
+import { useNavigate, useParams, Link } from "react-router";
+import { DetailPage } from "../../components/DetailPage";
+import { GroupApplicationsAccess } from "../../components/ApplicationAccess";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AdminGroup,
+  type AdminApplication,
   type AdminMcp,
   type AdminUser,
   api,
@@ -9,12 +13,10 @@ import {
 import {
   ConfirmModal,
   Switch,
-  Drawer,
   Empty,
   Icon,
   KindBadge,
   McpIcon,
-  Modal,
   PageHead,
 } from "../../components/ui";
 
@@ -50,7 +52,7 @@ function McpAccessMatrix({
   );
 }
 
-function NewGroupModal({
+function NewGroupForm({
   mcps,
   onClose,
   onCreated,
@@ -75,7 +77,6 @@ function NewGroupModal({
         body: JSON.stringify({ name, description, mcps: accesses }),
       });
       onCreated(created);
-      onClose();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -84,12 +85,12 @@ function NewGroupModal({
   }
 
   return (
-    <Modal title="Nouveau groupe" onClose={onClose}>
+    <DetailPage title="Nouveau groupe" onClose={onClose} backLabel="Retour aux groupes">
       <form className="stack" onSubmit={submit} id="new-group">
         {error && <div className="alert error">{error}</div>}
         <p className="small muted">
-          Les groupes définissent la disponibilité des ressources. Affectez les groupes aux ressources,
-          puis aux utilisateurs qui doivent pouvoir y accéder.
+          Les groupes définissent la disponibilité des ressources. Affectez les groupes
+          aux ressources, puis aux utilisateurs qui doivent pouvoir y accéder.
         </p>
         <label className="field">
           Nom
@@ -132,19 +133,21 @@ function NewGroupModal({
           </button>
         </div>
       </form>
-    </Modal>
+    </DetailPage>
   );
 }
 
-function GroupDrawer({
+function GroupDetails({
   group,
   mcps,
+  applications,
   users,
   onClose,
   onChanged,
 }: {
   group: AdminGroup;
   mcps: AdminMcp[];
+  applications: AdminApplication[];
   users: AdminUser[];
   onClose: () => void;
   onChanged: () => void;
@@ -161,7 +164,7 @@ function GroupDrawer({
 
   const [deleting, setDeleting] = useState(false);
 
-  /** Runs an admin call, surfaces its error in the drawer, and reports success. */
+  /** Runs an admin call, surfaces its error on the page, and reports success. */
   async function run(fn: () => Promise<unknown>): Promise<boolean> {
     setError(null);
     try {
@@ -207,9 +210,10 @@ function GroupDrawer({
   const candidates = users.filter((u) => !memberIds.has(u.id));
 
   return (
-    <Drawer
+    <DetailPage
+      backLabel="Retour aux groupes"
       title={group.name}
-      subtitle={group.description || "Groupe de ressources"}
+      subtitle={group.description || "Groupe d’accès"}
       onClose={onClose}
       footer={
         <>
@@ -240,7 +244,7 @@ function GroupDrawer({
             ? "Il n'a aucun membre."
             : `Ses ${group.userCount} membre${group.userCount > 1 ? "s" : ""} perd${
                 group.userCount > 1 ? "ront" : "ra"
-              } l'accès aux ressources accordées par ce groupe, clés API et jetons OAuth compris.`}
+              } l'accès aux applications et aux ressources accordé par ce groupe.`}
         </ConfirmModal>
       )}
       <div className="stack" style={{ gap: 26 }}>
@@ -281,6 +285,15 @@ function GroupDrawer({
         </section>
 
         <section className="stack tight">
+          <h3>Applications du groupe</h3>
+          <GroupApplicationsAccess
+            applications={applications}
+            groupId={group.id}
+            onChanged={onChanged}
+          />
+        </section>
+
+        <section className="stack tight">
           <div className="row spread">
             <h3>Membres ({group.members.length})</h3>
             <span className="tiny muted">
@@ -293,7 +306,9 @@ function GroupDrawer({
           {group.members.map((member) => (
             <div className="access-row" key={member.id}>
               <div className="names">
-                <strong>{member.name || member.email}</strong>
+                <Link to={`/admin/users/${encodeURIComponent(member.id)}`}>
+                  <strong>{member.name || member.email}</strong>
+                </Link>
                 <span>{member.email}</span>
               </div>
               <KindBadge kind={member.kind} />
@@ -331,7 +346,7 @@ function GroupDrawer({
           </div>
         </section>
       </div>
-    </Drawer>
+    </DetailPage>
   );
 }
 
@@ -340,24 +355,38 @@ export function AdminGroupsPage() {
   const [mcps, setMcps] = useState<AdminMcp[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const navigate = useNavigate();
+  const { groupId: selected } = useParams();
+  const creating = selected === "new";
+  const [applications, setApplications] = useState<AdminApplication[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const reload = useCallback(() => {
-    api<AdminGroup[]>("/api/admin/groups")
-      .then(setGroups)
-      .catch((e: Error) => setError(e.message));
-    api<AdminUser[]>("/api/admin/users")
-      .then(setUsers)
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    reload();
-    api<AdminMcp[]>("/api/admin/mcps")
-      .then((list) => setMcps(list.filter((m) => m.loaded)))
-      .catch(() => {});
-  }, [reload]);
+    const groupsRequest =
+      selected && !creating
+        ? api<AdminGroup>(`/api/admin/groups/${encodeURIComponent(selected)}`).then(
+            (group) => [group],
+          )
+        : api<AdminGroup[]>("/api/admin/groups");
+    setError(null);
+    setLoading(true);
+    Promise.all([
+      groupsRequest,
+      api<AdminApplication[]>("/api/admin/applications"),
+      api<AdminUser[]>("/api/admin/users"),
+      api<AdminMcp[]>("/api/admin/mcps"),
+    ])
+      .then(([groupRows, apps, userRows, resources]) => {
+        setGroups(groupRows);
+        setApplications(apps);
+        setUsers(userRows);
+        setMcps(resources.filter((mcp) => mcp.loaded));
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [selected, creating]);
+  useEffect(reload, [reload]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -372,19 +401,56 @@ export function AdminGroupsPage() {
   const current = groups.find((g) => g.id === selected) ?? null;
   const names = Object.fromEntries(mcps.map((m) => [m.slug, m.name]));
 
+  if (creating)
+    return (
+      <NewGroupForm
+        mcps={mcps}
+        onClose={() => navigate("/admin/groups")}
+        onCreated={(group) => navigate(`/admin/groups/${encodeURIComponent(group.id)}`)}
+      />
+    );
+  if (selected)
+    return current ? (
+      <>
+        {error && <div className="alert error">{error}</div>}
+        <GroupDetails
+          key={current.id}
+          group={current}
+          mcps={mcps}
+          applications={applications}
+          users={users}
+          onClose={() => navigate("/admin/groups")}
+          onChanged={reload}
+        />
+      </>
+    ) : (
+      <>
+        <Link className="btn ghost" to="/admin/groups">
+          Retour aux groupes
+        </Link>
+        <PageHead title="Groupe" />
+        {error ? (
+          <div className="alert error">{error}</div>
+        ) : (
+          <p className="muted">Chargement…</p>
+        )}
+      </>
+    );
+
   return (
     <>
       <PageHead
         eyebrow="Administration"
         title="Groupes"
-        lead="Affectez des groupes aux ressources puis aux utilisateurs. Seuls les membres de ces groupes peuvent accéder aux ressources associées."
+        lead="Gérez les membres et les applications et ressources disponibles pour chaque groupe."
         actions={
-          <button className="btn accent" onClick={() => setCreating(true)}>
+          <button className="btn accent" onClick={() => navigate("/admin/groups/new")}>
             <Icon name="plus" /> Nouveau groupe
           </button>
         }
       />
       {error && <div className="alert error">{error}</div>}
+      {loading && <p className="muted">Chargement…</p>}
       <div className="card">
         <div className="card-head" style={{ gap: 10, flexWrap: "wrap" }}>
           <span className="badge off plain">
@@ -401,7 +467,7 @@ export function AdminGroupsPage() {
         </div>
         {filtered.length === 0 ? (
           <Empty icon="group" title="Aucun groupe">
-            Créez les groupes qui pourront accéder aux ressources.
+            Créez les groupes qui pourront accéder aux applications et aux ressources.
           </Empty>
         ) : (
           <div className="table-wrap">
@@ -418,11 +484,19 @@ export function AdminGroupsPage() {
                 {filtered.map((group) => (
                   <tr
                     key={group.id}
-                    className={`clickable ${selected === group.id ? "selected" : ""}`}
-                    onClick={() => setSelected(group.id)}
+                    className="clickable"
+                    onClick={() =>
+                      navigate(`/admin/groups/${encodeURIComponent(group.id)}`)
+                    }
                   >
                     <td>
-                      <div className="primary">{group.name}</div>
+                      <Link
+                        className="primary"
+                        to={`/admin/groups/${encodeURIComponent(group.id)}`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {group.name}
+                      </Link>
                       <div className="secondary">{group.description || "—"}</div>
                     </td>
                     <td>
@@ -447,25 +521,6 @@ export function AdminGroupsPage() {
           </div>
         )}
       </div>
-      {current && (
-        <GroupDrawer
-          group={current}
-          mcps={mcps}
-          users={users}
-          onClose={() => setSelected(null)}
-          onChanged={reload}
-        />
-      )}
-      {creating && (
-        <NewGroupModal
-          mcps={mcps}
-          onClose={() => setCreating(false)}
-          onCreated={(group) => {
-            reload();
-            setSelected(group.id);
-          }}
-        />
-      )}
     </>
   );
 }

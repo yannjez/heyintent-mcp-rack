@@ -136,12 +136,25 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     expect(loginRedirect.pathname, loginRedirect.toString()).toBe("/login");
     expect(loginRedirect.searchParams.get("client_id")).toBe(client.client_id);
 
-    // OTP sign-in.
-    await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
+    // OTP delivery must work even when an older UI attaches an expired or
+    // malformed OAuth context. Only the later authorization verifies it.
+    const invalidQuery = `client_id=${encodeURIComponent(client.client_id)}&exp=1&sig=invalid`;
+    for (const oauthQuery of [invalidQuery, loginRedirect.search.slice(1)]) {
+      const sent = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: baseUrl },
+        body: JSON.stringify({ email: EMAIL, type: "sign-in", oauth_query: oauthQuery }),
+      });
+      expect(sent.status, await sent.text()).toBe(200);
+      expect(lastOtp).toMatch(/^\d{6}$/);
+    }
+    const invalidSignIn = await fetch(`${baseUrl}/api/auth/sign-in/email-otp`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: baseUrl },
-      body: JSON.stringify({ email: EMAIL, type: "sign-in" }),
+      body: JSON.stringify({ email: EMAIL, otp: lastOtp, oauth_query: invalidQuery }),
     });
+    expect(invalidSignIn.status).toBe(400);
+    expect(await invalidSignIn.json()).toMatchObject({ error: "invalid_signature" });
     // Signing in with the signed `oauth_query` (what the oauthProviderClient
     // plugin attaches from the login page URL) resumes the authorization: the
     // response is the next hop, here the consent page.
@@ -294,6 +307,21 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       expect(registration.status).toBe(201);
       applicationIds.push(clientId);
       const headers = { "content-type": "application/json", origin: baseUrl, cookie };
+      const myApplications = async () => {
+        const response = await fetch(`${baseUrl}/api/applications`, {
+          headers: { cookie },
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()) as Array<{
+          clientId: string;
+          name: string | null;
+          url: string | null;
+        }>;
+      };
+      expect((await fetch(`${baseUrl}/api/applications`)).status).toBe(401);
+      expect(await myApplications()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ clientId })]),
+      );
       const verifier = b64url(randomBytes(32));
       const query = new URLSearchParams({
         response_type: "code",
@@ -334,6 +362,9 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
         403,
       );
       expect((await authorize()).status).toBe(403);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
 
       const group = await db.mcpGroup.findUniqueOrThrow({
         where: { name: "vitest-oauth-group" },
@@ -342,10 +373,16 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       await db.mcpGroupUser.create({ data: { groupId: group.id, userId: user.id } });
       const groupRedirect = await redirectTarget(await authorize(), baseUrl);
       expect(groupRedirect.pathname).toBe("/consent");
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        true,
+      );
       await db.applicationAccess.create({
         data: { clientId, userId: user.id, allowed: false },
       });
       expect((await authorize()).status).toBe(403);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
       await db.applicationAccess.update({
         where: { clientId_userId: { clientId, userId: user.id } },
         data: { allowed: true },
@@ -418,6 +455,38 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
         (await fetch(`${baseUrl}/api/admin/applications`, { headers: { cookie } }))
           .status,
       ).toBe(403);
+      for (const path of [
+        `/api/admin/users/${user.id}`,
+        `/api/admin/groups/${group.id}`,
+      ]) {
+        expect((await fetch(`${baseUrl}${path}`, { headers: { cookie } })).status).toBe(
+          403,
+        );
+      }
+      expect(
+        (
+          await fetch(
+            `${baseUrl}/api/admin/users/${user.id}/applications/${encodeURIComponent(clientId)}`,
+            {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({ access: "allow" }),
+            },
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await fetch(
+            `${baseUrl}/api/admin/applications/${encodeURIComponent(clientId)}/groups/${group.id}`,
+            {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({ enabled: true }),
+            },
+          )
+        ).status,
+      ).toBe(403);
       await db.user.update({ where: { id: user.id }, data: { role: "admin" } });
       const listing = await fetch(`${baseUrl}/api/admin/applications`, {
         headers: { cookie },
@@ -434,6 +503,107 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
           headers,
           body: JSON.stringify(body),
         });
+      const userDetail = await fetch(`${baseUrl}/api/admin/users/${user.id}`, {
+        headers: { cookie },
+      });
+      expect(userDetail.status).toBe(200);
+      expect(await userDetail.json()).toMatchObject({
+        id: user.id,
+        email: EMAIL,
+        groups: [],
+      });
+      const groupDetail = await fetch(`${baseUrl}/api/admin/groups/${group.id}`, {
+        headers: { cookie },
+      });
+      expect(groupDetail.status).toBe(200);
+      expect(await groupDetail.json()).toMatchObject({ id: group.id, members: [] });
+      for (const path of ["/api/admin/users/missing", "/api/admin/groups/missing"]) {
+        expect((await fetch(`${baseUrl}${path}`, { headers: { cookie } })).status).toBe(
+          404,
+        );
+      }
+      const setUserApplication = (access: string) =>
+        fetch(
+          `${baseUrl}/api/admin/users/${user.id}/applications/${encodeURIComponent(clientId)}`,
+          {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ access }),
+          },
+        );
+      const setGroupApplication = (enabled: boolean) =>
+        fetch(
+          `${baseUrl}/api/admin/applications/${encodeURIComponent(clientId)}/groups/${group.id}`,
+          {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ enabled }),
+          },
+        );
+      expect((await setUserApplication("invalid")).status).toBe(400);
+      expect((await setUserApplication("allow")).status).toBe(200);
+      expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
+      expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        true,
+      );
+      expect((await setUserApplication("default")).status).toBe(200);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
+      await db.mcpGroupUser.create({ data: { userId: user.id, groupId: group.id } });
+      expect((await setGroupApplication(false)).status).toBe(200);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
+      expect((await setGroupApplication(true)).status).toBe(200);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        true,
+      );
+      expect((await setUserApplication("deny")).status).toBe(200);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
+      expect((await setUserApplication("default")).status).toBe(200);
+      expect((await patch({ uri: baseUrl })).status).toBe(400);
+      await db.oauthClient.update({ where: { clientId }, data: { uri: `${baseUrl}/` } });
+      expect(
+        (await myApplications()).some((application) => application.clientId === clientId),
+      ).toBe(false);
+      const withoutRack = await fetch(`${baseUrl}/api/admin/applications`, {
+        headers: { cookie },
+      });
+      expect(
+        ((await withoutRack.json()) as Array<{ clientId: string }>).some(
+          (application) => application.clientId === clientId,
+        ),
+      ).toBe(false);
+      expect((await patch({ disabled: true })).status).toBe(404);
+      await db.oauthClient.update({ where: { clientId }, data: { uri: null } });
+      expect((await patch({ uri: "not-a-url" })).status).toBe(400);
+      expect((await patch({ uri: "javascript:alert(1)" })).status).toBe(400);
+      expect((await patch({ uri: "https://user:password@factory.example" })).status).toBe(
+        400,
+      );
+      expect(
+        (await patch({ name: "Coding factory", uri: "https://factory.example/" })).status,
+      ).toBe(200);
+      const publicApplication = (await myApplications()).find(
+        (app) => app.clientId === clientId,
+      )!;
+      expect(publicApplication).toEqual({
+        clientId,
+        name: "Coding factory",
+        url: "https://factory.example/",
+      });
+      await db.oauthClient.update({
+        where: { clientId },
+        data: { uri: "javascript:alert(1)" },
+      });
+      expect((await myApplications()).find((app) => app.clientId === clientId)?.url).toBe(
+        null,
+      );
+      await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
       expect((await patch({ groupIds: ["unknown"] })).status).toBe(404);
       expect(
         (await patch({ users: [{ userId: "unknown", allowed: true }] })).status,
@@ -454,6 +624,9 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       ).toBe(200);
       expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
       expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);
+      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
+        false,
+      );
       const disabled = await redirectTarget(await authorize(), baseUrl);
       expect(disabled.searchParams.get("error")).toBeTruthy();
       expect(disabled.searchParams.has("code")).toBe(false);

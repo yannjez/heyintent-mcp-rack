@@ -10,6 +10,9 @@ import {
 } from "react-router";
 import { api, ApiError, type Me } from "./api";
 import { Layout } from "./components/Layout";
+import { HomePage } from "./pages/Home";
+import { ApplicationsPage } from "./pages/Applications";
+import { AdminCataloguePage } from "./pages/admin/Catalogue";
 import { AdminApplicationsPage } from "./pages/admin/Applications";
 import { AdminGroupsPage } from "./pages/admin/Groups";
 import { AdminLogsPage } from "./pages/admin/Logs";
@@ -38,12 +41,18 @@ function Protected({ admin = false, bare = false }: { admin?: boolean; bare?: bo
 
   if (me === undefined) return <div className="loader">Chargement…</div>;
   if (me === null)
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return (
+      <Navigate
+        to={location.pathname === "/consent" ? `/login${location.search}` : "/login"}
+        replace
+        state={{ from: location.pathname + location.search }}
+      />
+    );
   if (admin && !me.isAdmin) return <Navigate to="/" replace />;
   return bare ? <Outlet context={me} /> : <Layout me={me} />;
 }
 
-function Home() {
+function Resources() {
   const me = useOutletContext<Me>();
   return <McpsPage me={me} />;
 }
@@ -63,18 +72,31 @@ const router = createBrowserRouter([
   {
     element: <Protected />,
     children: [
-      { path: "/", element: <Home /> },
+      { path: "/", element: <HomePage /> },
+      { path: "/applications", element: <ApplicationsPage /> },
+      { path: "/ressources", element: <Resources /> },
       { path: "/keys", element: <KeysPage /> },
     ],
   },
   {
     element: <Protected admin />,
     children: [
-      { path: "/admin/applications", element: <AdminApplicationsPage /> },
+      { path: "/admin/catalogue", element: <AdminCataloguePage /> },
+      {
+        path: "/admin/catalogue/applications/:clientId",
+        element: <AdminApplicationsPage />,
+      },
+      { path: "/admin/catalogue/ressources/:slug", element: <AdminMcpsPage /> },
+      {
+        path: "/admin/applications",
+        element: <Navigate to="/admin/catalogue" replace />,
+      },
       { path: "/admin/users", element: <Users /> },
+      { path: "/admin/users/:userId", element: <Users /> },
       { path: "/admin/groups", element: <AdminGroupsPage /> },
-      { path: "/admin/ressources", element: <AdminMcpsPage /> },
-      { path: "/admin/mcps", element: <Navigate to="/admin/ressources" replace /> },
+      { path: "/admin/groups/:groupId", element: <AdminGroupsPage /> },
+      { path: "/admin/ressources", element: <Navigate to="/admin/catalogue" replace /> },
+      { path: "/admin/mcps", element: <Navigate to="/admin/catalogue" replace /> },
       { path: "/admin/logs", element: <AdminLogsPage /> },
       { path: "/admin/keys", element: <Navigate to="/admin/users" replace /> },
     ],

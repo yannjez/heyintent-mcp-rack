@@ -1,18 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AdminGroup, type AdminUser } from "../../api";
-import { Drawer, Empty, PageHead } from "../../components/ui";
-
-interface Application {
-  clientId: string;
-  name: string | null;
-  uri: string | null;
-  disabled: boolean;
-  accessRestricted: boolean;
-  groupIds: string[];
-  users: { userId: string; allowed: boolean }[];
-  redirectUris: string[];
-  scopes: string[];
-}
+import { useNavigate, useParams, Link } from "react-router";
+import { DetailPage } from "../../components/DetailPage";
+import { PageHead } from "../../components/ui";
+import type { AdminApplication as Application } from "../../api";
 
 function ApplicationEditor({
   application,
@@ -31,6 +22,7 @@ function ApplicationEditor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [saved, setSaved] = useState(false);
 
   async function save() {
     setBusy(true);
@@ -39,6 +31,8 @@ function ApplicationEditor({
       await api(`/api/admin/applications/${encodeURIComponent(draft.clientId)}`, {
         method: "PATCH",
         body: JSON.stringify({
+          ...(draft.name?.trim() ? { name: draft.name.trim() } : {}),
+          uri: draft.uri?.trim() || null,
           disabled: draft.disabled,
           accessRestricted: draft.accessRestricted,
           groupIds: draft.groupIds,
@@ -46,7 +40,7 @@ function ApplicationEditor({
         }),
       });
       onSaved();
-      onClose();
+      setSaved(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -55,19 +49,51 @@ function ApplicationEditor({
   }
 
   return (
-    <Drawer title={application.name || "Application"} onClose={onClose}>
+    <DetailPage
+      title={application.name || "Application"}
+      subtitle="Connexion et droits d’accès"
+      onClose={onClose}
+    >
       <form
         className="stack"
+        onChange={() => setSaved(false)}
         onSubmit={(event) => {
           event.preventDefault();
           void save();
         }}
       >
         {error && <div className="alert error">{error}</div>}
+        {saved && (
+          <div className="alert" role="status">
+            Modifications enregistrées.
+          </div>
+        )}
         <code className="small" style={{ overflowWrap: "anywhere" }}>
           {draft.clientId}
         </code>
-        {draft.uri && <p className="small muted">{draft.uri}</p>}
+        <label className="field">
+          Nom de l’application
+          <input
+            value={draft.name ?? ""}
+            maxLength={200}
+            disabled={busy}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          />
+        </label>
+        <label className="field">
+          Adresse de l’application
+          <input
+            type="url"
+            value={draft.uri ?? ""}
+            maxLength={2000}
+            disabled={busy}
+            placeholder="https://application.exemple.com"
+            onChange={(e) => setDraft({ ...draft, uri: e.target.value })}
+          />
+          <span className="hint">
+            Cette adresse permet d’ouvrir l’application depuis « Mes applications ».
+          </span>
+        </label>
         <label className="field">
           État
           <select
@@ -182,7 +208,7 @@ function ApplicationEditor({
           {busy ? "Enregistrement…" : "Enregistrer"}
         </button>
       </form>
-    </Drawer>
+    </DetailPage>
   );
 }
 
@@ -190,7 +216,8 @@ export function AdminApplicationsPage() {
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [selected, setSelected] = useState<Application | null>(null);
+  const navigate = useNavigate();
+  const { clientId } = useParams();
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
@@ -211,52 +238,32 @@ export function AdminApplicationsPage() {
     void load();
   }, [load]);
 
+  const selected = applications?.find((app) => app.clientId === clientId);
+  if (selected)
+    return (
+      <ApplicationEditor
+        key={selected.clientId}
+        application={selected}
+        groups={groups}
+        users={users}
+        onClose={() => navigate("/admin/catalogue")}
+        onSaved={() => {
+          void load();
+        }}
+      />
+    );
   return (
     <>
-      <PageHead
-        title="Applications"
-        lead="Gérez les applications clientes et les personnes autorisées à s'y connecter."
-      />
-      {error && <div className="alert error">{error}</div>}
-      {!applications ? (
-        <p className="muted">Chargement…</p>
-      ) : applications.length === 0 ? (
-        <Empty icon="plug" title="Aucune application enregistrée">
-          Les applications apparaissent ici après leur enregistrement OAuth auprès de
-          Rack.
-        </Empty>
+      <Link className="btn ghost" to="/admin/catalogue">
+        Retour au catalogue
+      </Link>
+      <PageHead title="Application" />
+      {error ? (
+        <div className="alert error">{error}</div>
+      ) : applications ? (
+        <p className="muted">Application introuvable.</p>
       ) : (
-        <div className="access-matrix">
-          {applications.map((application) => (
-            <div className="access-row" key={application.clientId}>
-              <div className="names">
-                <strong>{application.name || "Application sans nom"}</strong>
-                <span>{application.clientId}</span>
-                <span>
-                  {application.disabled
-                    ? "Désactivée"
-                    : application.accessRestricted
-                      ? `${application.groupIds.length} groupe(s) · accès restreint`
-                      : "Tous les utilisateurs"}
-                </span>
-              </div>
-              <button className="btn" onClick={() => setSelected(application)}>
-                Gérer l'accès
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      {selected && (
-        <ApplicationEditor
-          application={selected}
-          groups={groups}
-          users={users}
-          onClose={() => setSelected(null)}
-          onSaved={() => {
-            void load();
-          }}
-        />
+        <p className="muted">Chargement…</p>
       )}
     </>
   );

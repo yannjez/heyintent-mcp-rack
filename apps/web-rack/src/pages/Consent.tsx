@@ -3,6 +3,12 @@ import { useLocation, useOutletContext } from "react-router";
 import { authClient } from "../auth-client";
 import { type Access, api, type Me, type UserMcp } from "../api";
 import { AccessPicker, Icon, McpIcon } from "../components/ui";
+import {
+  authErrorMessage,
+  isInvalidOAuthQuery,
+  oauthRequestExpired,
+  restartOAuthPath,
+} from "../oauth-recovery";
 import { finishOAuth, useClientName } from "../oauth";
 
 /** Non-MCP scopes a client may ask for, in plain words. */
@@ -29,7 +35,12 @@ interface ScopeGroup {
 
 export function ConsentPage() {
   const me = useOutletContext<Me>();
-  const params = new URLSearchParams(useLocation().search);
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const [invalidOAuth, setInvalidOAuth] = useState(() =>
+    oauthRequestExpired(location.search),
+  );
+  const restartPath = restartOAuthPath(location.search);
   const clientId = params.get("client_id");
   const clientName = useClientName(clientId);
   const scope = params.get("scope") ?? "";
@@ -101,15 +112,28 @@ export function ConsentPage() {
       });
       const next = (result.data as { redirect?: boolean; url?: string } | null) ?? {};
       if (next.url) {
+        const target = new URL(next.url, window.location.origin);
+        if (target.origin === window.location.origin && target.pathname === "/consent") {
+          setInvalidOAuth(true);
+          setBusy(false);
+          setError("L’autorisation n’a pas pu aboutir. Reprenez la connexion.");
+          return;
+        }
         if (accept && !identityOnly) await finishOAuth(next.url, clientId);
         else window.location.href = next.url;
         return;
       }
       setBusy(false);
-      setError(result.error?.message ?? "Réponse inattendue du serveur.");
+      if (isInvalidOAuthQuery(result.error)) setInvalidOAuth(true);
+      setError(authErrorMessage(result.error, "Réponse inattendue du serveur."));
     } catch (e) {
       setBusy(false);
-      setError((e as Error).message);
+      setError(
+        authErrorMessage(
+          e,
+          "Impossible de joindre le serveur. Réessayez dans un instant.",
+        ),
+      );
     }
   }
 
@@ -200,7 +224,24 @@ export function ConsentPage() {
           </div>
         </div>
         <div className="card-body stack">
-          {error && <div className="alert error">{error}</div>}
+          {error && (
+            <div className="alert error" role="alert">
+              {error}
+            </div>
+          )}
+          {invalidOAuth && restartPath && (
+            <div className="stack tight">
+              {!error && (
+                <div className="alert error" role="alert">
+                  La demande d’autorisation a expiré. Reprenez la connexion pour
+                  continuer.
+                </div>
+              )}
+              <a className="btn accent" href={restartPath}>
+                Reprendre la connexion
+              </a>
+            </div>
+          )}
           {applicationAllowed === false && (
             <div className="alert error">
               Vous n'avez pas accès à cette application. Contactez un administrateur.
@@ -292,6 +333,7 @@ export function ConsentPage() {
             className="btn accent"
             disabled={
               busy ||
+              invalidOAuth ||
               applicationAllowed !== true ||
               (!identityOnly && (!mcps || granted.length === 0))
             }

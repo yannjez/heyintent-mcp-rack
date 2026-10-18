@@ -222,3 +222,21 @@ export function formatRelative(value: string | null | undefined) {
   if (days < 30) return `il y a ${days} j`;
   return formatDate(value);
 }
+
+export interface AdminApplication {
+  clientId: string;
+  name: string | null;
+  uri: string | null;
+  disabled: boolean;
+  accessRestricted: boolean;
+  groupIds: string[];
+  users: { userId: string; allowed: boolean }[];
+  redirectUris: string[];
+  scopes: string[];
+}
+
+export interface UserApplication {
+  clientId: string;
+  name: string | null;
+  url: string | null;
+}
