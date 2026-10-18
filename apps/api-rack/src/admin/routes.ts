@@ -3,6 +3,7 @@ import type { Db } from "@rack/database";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import * as z from "zod";
+import { canAccessApplication } from "../auth/applications.js";
 import type { Auth } from "../auth/auth.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
@@ -91,7 +92,12 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         select: { clientId: true, name: true, uri: true },
       });
       if (!client) return jsonError(reply, 404, "Unknown client");
-      return { clientId: client.clientId, name: client.name, uri: client.uri };
+      return {
+        clientId: client.clientId,
+        name: client.name,
+        uri: client.uri,
+        allowed: await canAccessApplication(deps.db, client.clientId, user.id),
+      };
     },
   );
 
@@ -116,6 +122,91 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         url: `${deps.baseUrl}/mcp/${mcp.slug}`,
       }));
   });
+
+  // ---------------------------------------------------------------- Applications
+
+  app.get("/api/admin/applications", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const clients = await deps.db.oauthClient.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        clientId: true,
+        name: true,
+        uri: true,
+        disabled: true,
+        accessRestricted: true,
+        redirectUris: true,
+        scopes: true,
+        applicationGroups: { select: { groupId: true } },
+        applicationAccesses: { select: { userId: true, allowed: true } },
+      },
+    });
+    return clients.map(({ applicationGroups, applicationAccesses, ...client }) => ({
+      ...client,
+      disabled: client.disabled ?? false,
+      groupIds: applicationGroups.map((g) => g.groupId),
+      users: applicationAccesses,
+    }));
+  });
+
+  app.patch<{ Params: { clientId: string } }>(
+    "/api/admin/applications/:clientId",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      const parsed = z
+        .strictObject({
+          disabled: z.boolean().optional(),
+          accessRestricted: z.boolean().optional(),
+          groupIds: z.array(z.string().min(1)).max(100).optional(),
+          users: z
+            .array(z.strictObject({ userId: z.string().min(1), allowed: z.boolean() }))
+            .max(500)
+            .optional(),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) return invalid(reply, parsed.error);
+      const { clientId } = request.params;
+      const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
+      if (!client) return jsonError(reply, 404, "Unknown application");
+      const { disabled, accessRestricted, groupIds, users } = parsed.data;
+      if (users && new Set(users.map((u) => u.userId)).size !== users.length)
+        return jsonError(reply, 400, "Duplicate user");
+      if (groupIds) {
+        const count = await deps.db.mcpGroup.count({ where: { id: { in: groupIds } } });
+        if (count !== new Set(groupIds).size)
+          return jsonError(reply, 404, "Unknown group");
+      }
+      if (users) {
+        const count = await deps.db.user.count({
+          where: { id: { in: users.map((u) => u.userId) } },
+        });
+        if (count !== users.length) return jsonError(reply, 404, "Unknown user");
+      }
+      await deps.db.$transaction([
+        deps.db.oauthClient.update({
+          where: { clientId },
+          data: {
+            ...(disabled !== undefined ? { disabled } : {}),
+            ...(accessRestricted !== undefined ? { accessRestricted } : {}),
+            ...(groupIds
+              ? {
+                  applicationGroups: {
+                    deleteMany: {},
+                    create: [...new Set(groupIds)].map((groupId) => ({ groupId })),
+                  },
+                }
+              : {}),
+            ...(users ? { applicationAccesses: { deleteMany: {}, create: users } } : {}),
+          },
+        }),
+        // Clear saved grants and refresh credentials when the policy changes.
+        deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
+        deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
+        deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+      ]);
+      return { clientId, updated: true };
+    },
+  );
 
   // ---------------------------------------------------------------- MCPs
 

@@ -44,7 +44,7 @@ export async function finishOAuth(callbackUrl: string, clientId: string | null) 
 
 /** Human label for an OAuth client id (DCR ids and CIMD URLs alike). */
 export function clientLabel(clientId: string | null | undefined) {
-  if (!clientId) return "votre client MCP";
+  if (!clientId) return "cette application";
   const id = clientId.toLowerCase();
   if (id.includes("codex") || id.includes("chatgpt.com")) return "Codex";
   if (id.includes("claude")) return "Claude Code";

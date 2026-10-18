@@ -36,13 +36,14 @@ model Mcp {
 /// A group authorizing its members to use the associated MCPs.
 
 model McpGroup {
-  id          String        @id @default(cuid())
-  name        String        @unique
-  description String        @default("")
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  mcps        McpGroupMcp[]
-  users       McpGroupUser[]
+  id           String             @id @default(cuid())
+  name         String             @unique
+  description  String             @default("")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  mcps         McpGroupMcp[]
+  users        McpGroupUser[]
+  applications ApplicationGroup[]
 
   @@map("mcp_groups")
 }
@@ -133,27 +134,28 @@ model ToolCall {
 }
 
 model User {
-  id                 String              @id
-  name               String
-  email              String
-  emailVerified      Boolean             @default(false)
-  image              String?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  role               String              @default("user")
+  id                  String              @id
+  name                String
+  email               String
+  emailVerified       Boolean             @default(false)
+  image               String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  role                String              @default("user")
   /// Typology: "internal" (Intent), "external" (partner/freelance) or "client".
-  kind               String              @default("internal")
+  kind                String              @default("internal")
   /// Groups assigned by an administrator.
-  groups             McpGroupUser[]
-  banned             Boolean?            @default(false)
-  banReason          String?
-  banExpires         DateTime?
-  sessions           Session[]
-  accounts           Account[]
-  oauthclients       OauthClient[]
-  oauthrefreshtokens OauthRefreshToken[]
-  oauthaccesstokens  OauthAccessToken[]
-  oauthconsents      OauthConsent[]
+  groups              McpGroupUser[]
+  applicationAccesses ApplicationAccess[]
+  banned              Boolean?            @default(false)
+  banReason           String?
+  banExpires          DateTime?
+  sessions            Session[]
+  accounts            Account[]
+  oauthclients        OauthClient[]
+  oauthrefreshtokens  OauthRefreshToken[]
+  oauthaccesstokens   OauthAccessToken[]
+  oauthconsents       OauthConsent[]
 
   @@unique([email])
   @@map("user")
@@ -257,6 +259,9 @@ model OauthClient {
   clientId                         String
   clientSecret                     String?
   clientDiscoveryId                String?
+  accessRestricted                 Boolean               @default(false)
+  applicationGroups                ApplicationGroup[]
+  applicationAccesses              ApplicationAccess[]
   disabled                         Boolean?              @default(false)
   skipConsent                      Boolean?
   enableEndSession                 Boolean?
@@ -422,4 +427,29 @@ model OauthClientAssertion {
   expiresAt DateTime
 
   @@map("oauthClientAssertion")
+}
+
+/// Group access to an OAuth client application, separate from MCP permissions.
+model ApplicationGroup {
+  clientId String
+  client   OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  groupId  String
+  group    McpGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([clientId, groupId])
+  @@index([groupId])
+  @@map("application_groups")
+}
+
+/// Individual allow/deny overrides; explicit denial takes priority over groups.
+model ApplicationAccess {
+  clientId String
+  client   OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  userId   String
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allowed  Boolean
+
+  @@id([clientId, userId])
+  @@index([userId])
+  @@map("application_access")
 }

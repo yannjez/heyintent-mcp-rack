@@ -6,7 +6,9 @@ import type { Db } from "@rack/database";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError, createAuthMiddleware } from "better-auth/api";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { admin, emailOTP, jwt } from "better-auth/plugins";
+import { canAccessApplication } from "./applications.js";
 import type { OtpSender } from "./email.js";
 
 export const API_KEY_PREFIX = "rk_";
@@ -52,7 +54,23 @@ export function createAuth(db: Db | object, input: AuthInput) {
   const resource = mcpResource(input.baseUrl);
   const scopes = [...BASE_SCOPES, ...(input.extraScopes ?? [])];
 
-  return betterAuth({
+  // Keep the client identifier tied to this request across login continuations
+  // and token issuance. OAuth validates the signed query/client credentials.
+  const oauthClient = new AsyncLocalStorage<string | undefined>();
+  async function assertApplicationAccess(
+    userId: string,
+    clientId = oauthClient.getStore(),
+  ) {
+    if (!clientId || !(await canAccessApplication(db as Db, clientId, userId))) {
+      throw new APIError("FORBIDDEN", {
+        error: "access_denied",
+        error_description:
+          "Accès à cette application non autorisé. Contactez un administrateur.",
+      });
+    }
+  }
+
+  const auth = betterAuth({
     appName: "Intent Ressource Rack",
     baseURL: input.baseUrl,
     secret: input.secret,
@@ -104,6 +122,34 @@ export function createAuth(db: Db | object, input: AuthInput) {
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
         scopes,
+        postLogin: {
+          page: "/consent",
+          shouldRedirect: async ({ user }) => {
+            await assertApplicationAccess(user.id);
+            return false;
+          },
+          consentReferenceId: async ({ user }) => {
+            await assertApplicationAccess(user.id);
+            return undefined;
+          },
+        },
+        extensions: [
+          {
+            claims: {
+              userInfo: async ({ user, client, jwt }) => {
+                const clientId =
+                  client?.clientId ??
+                  (typeof jwt.client_id === "string" ? jwt.client_id : undefined);
+                await assertApplicationAccess(user.id, clientId);
+                return {};
+              },
+            },
+          },
+        ],
+        customTokenResponseFields: async ({ user }) => {
+          if (user) await assertApplicationAccess(user.id);
+          return {};
+        },
       }),
       cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
     ],
@@ -126,6 +172,65 @@ export function createAuth(db: Db | object, input: AuthInput) {
       max: 20,
     },
   });
+  const handler = auth.handler;
+  auth.handler = async (request: Request) => {
+    const url = new URL(request.url);
+    let clientId = url.searchParams.get("client_id") ?? undefined;
+    if (request.method === "POST") {
+      const copy = request.clone();
+      let body: Record<string, unknown> = {};
+      try {
+        if (request.headers.get("content-type")?.includes("application/json")) {
+          body = (await copy.json()) as Record<string, unknown>;
+        } else {
+          const form = new URLSearchParams(await copy.text());
+          if (["client_id", "oauth_query"].some((key) => form.getAll(key).length > 1)) {
+            return Response.json(
+              {
+                error: "invalid_request",
+                error_description: "Duplicate client parameters",
+              },
+              { status: 400 },
+            );
+          }
+          body = Object.fromEntries(form);
+        }
+      } catch {
+        /* Let Better Auth report malformed bodies. */
+      }
+      const tokenRequest = url.pathname.endsWith("/oauth2/token");
+      if (tokenRequest) {
+        // Only token credentials identify the client here. An unsigned oauth_query
+        // or URL parameter must never override the client exchanging a token.
+        clientId = typeof body?.client_id === "string" ? body.client_id : undefined;
+      } else if (typeof body?.oauth_query === "string") {
+        // For consent/login, only the provider-verified signed query is binding;
+        // ignore any extra client_id or Authorization supplied in the POST body.
+        clientId = new URLSearchParams(body.oauth_query).get("client_id") ?? undefined;
+      }
+      const authorization = request.headers.get("authorization");
+      if (tokenRequest && authorization?.toLowerCase().startsWith("basic ")) {
+        const credentials = Buffer.from(authorization.slice(6), "base64").toString();
+        try {
+          const basicClientId = decodeURIComponent(credentials.split(":")[0]!);
+          if (clientId && clientId !== basicClientId) {
+            return Response.json(
+              {
+                error: "invalid_request",
+                error_description: "Conflicting client identifiers",
+              },
+              { status: 400 },
+            );
+          }
+          clientId = basicClientId;
+        } catch {
+          clientId = undefined;
+        }
+      }
+    }
+    return oauthClient.run(clientId, () => handler(request));
+  };
+  return auth;
 }
 
 export type Auth = ReturnType<typeof createAuth>;

@@ -89,6 +89,33 @@ Les deux modes produisent la même `Identity` côté serveur (`userId`, `grants.
 Accès effectif = disponibilité via un groupe commun ∩ droits individuels (lecture par défaut)
 ∩ niveau porté par la credential. Sans groupe commun, le MCP répond 403. En lecture, seuls les tools `readOnlyHint: true` sont servis.
 
+## Gérer les applications
+
+« Administration → Applications » liste les clients OAuth déjà enregistrés (DCR ou CIMD),
+comme Coding factory. Une demande `openid profile email` permet de se connecter sans
+sélectionner de ressource MCP. `offline_access` permet aussi le renouvellement du jeton.
+
+Pour chaque application, l'administrateur peut :
+
+- activer ou désactiver les connexions ;
+- autoriser tous les utilisateurs (valeur par défaut, y compris pour les clients existants) ;
+- restreindre l'accès aux groupes sélectionnés et aux utilisateurs explicitement autorisés ;
+- refuser individuellement un utilisateur, avec priorité sur l'accès ouvert et les groupes.
+
+Les groupes sont ceux de « Administration → Groupes ». Les administrateurs sont soumis aux
+mêmes règles d'accès aux applications. Un compte banni ou une application désactivée reste
+bloqué malgré une autorisation individuelle. Ces permissions sont indépendantes des ressources :
+accéder à une application n'accorde aucun droit MCP supplémentaire.
+
+Les règles sont vérifiées à l'autorisation, au consentement, à l'émission et au renouvellement
+des jetons, à la lecture du profil OAuth et lors des appels MCP. Enregistrer la politique d'une
+application révoque ses jetons enregistrés et ses consentements ; un nouveau passage OAuth
+est nécessaire au renouvellement. Une session déjà ouverte dans une application externe reste sous le contrôle de
+cette application : Rack ne peut pas la fermer directement.
+
+La migration `20261018120000_application_access` doit être appliquée avant de démarrer cette
+version (`pnpm --filter @rack/database migrate:deploy`, automatique avec l'image Docker).
+
 ## Ajouter un MCP
 
 Voir [mcps/_template/README.md](mcps/_template/README.md) : copier le template, déclarer `slug`,

@@ -8,6 +8,7 @@ import {
   identityFromAccessToken,
   identityFromApiKey,
 } from "../auth/identity.js";
+import { canAccessApplication } from "../auth/applications.js";
 import { mcpResource } from "../auth/auth.js";
 import { jsonError, sendWebResponse, toWebRequest } from "../http.js";
 import { createRackMcpHandler, type McpHandlerDeps, toAuthInfo } from "./handler.js";
@@ -37,6 +38,13 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
    * credential allows it.
    */
   async function resolve(slug: string, identity: Identity) {
+    if (
+      identity.via === "oauth" &&
+      (!identity.clientId ||
+        !(await canAccessApplication(deps.db, identity.clientId, identity.userId)))
+    ) {
+      return { status: 403 as const, error: "Application access denied" };
+    }
     const registered = await deps.registry.get(slug);
     const handler = handlers.get(slug);
     if (!registered || !handler || !registered.record.enabled) {

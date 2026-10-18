@@ -38,6 +38,7 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
   let baseUrl = "";
   let lastOtp = "";
   let cookie = "";
+  const applicationIds: string[] = [];
 
   beforeAll(async () => {
     await db.user.deleteMany({ where: { email: EMAIL } });
@@ -70,6 +71,7 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     await app?.close();
     await db.user.deleteMany({ where: { email: EMAIL } });
     await db.mcpGroup.deleteMany({ where: { name: "vitest-oauth-group" } });
+    await db.oauthClient.deleteMany({ where: { clientId: { in: applicationIds } } });
     await db.$disconnect();
   });
 
@@ -113,6 +115,7 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     });
     const client = (await registration.json()) as { client_id: string };
     expect(registration.status, JSON.stringify(client)).toBe(201);
+    applicationIds.push(client.client_id);
 
     // Authorization request → redirected to the login page with a signed query.
     const verifier = b64url(randomBytes(32));
@@ -234,6 +237,19 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     const echo = await mcp.callTool({ name: "echo", arguments: { message: "oauth" } });
     expect(echo.structuredContent).toMatchObject({ via: "oauth", access: "read" });
     await mcp.close();
+    await db.applicationAccess.create({
+      data: { clientId: client.client_id, userId: user.id, allowed: false },
+    });
+    const applicationRevoked = await fetch(`${baseUrl}/mcp/sample`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokens.access_token}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(applicationRevoked.status).toBe(403);
+    await db.applicationAccess.deleteMany({ where: { clientId: client.client_id } });
     await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
     const revoked = await fetch(`${baseUrl}/mcp/sample`, {
       method: "POST",
@@ -245,4 +261,203 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     });
     expect(revoked.status).toBe(403);
   });
+
+  it.each(["none", "client_secret_basic", "client_secret_post"] as const)(
+    "supports identity-only consent and application access with %s",
+    async (authMethod) => {
+      const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+      const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Vitest identity application",
+          application_type: "native",
+          redirect_uris: [REDIRECT_URI],
+          token_endpoint_auth_method: authMethod,
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        }),
+      });
+      const { client_id: clientId, client_secret: clientSecret } =
+        (await registration.json()) as { client_id: string; client_secret?: string };
+      const tokenHeaders: Record<string, string> = {
+        "content-type": "application/x-www-form-urlencoded",
+      };
+      const credentials: Record<string, string> = {};
+      if (authMethod === "client_secret_basic") {
+        tokenHeaders.authorization = `Basic ${Buffer.from(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret!)}`).toString("base64")}`;
+      } else {
+        credentials.client_id = clientId;
+        if (authMethod === "client_secret_post")
+          credentials.client_secret = clientSecret!;
+      }
+      expect(registration.status).toBe(201);
+      applicationIds.push(clientId);
+      const headers = { "content-type": "application/json", origin: baseUrl, cookie };
+      const verifier = b64url(randomBytes(32));
+      const query = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: REDIRECT_URI,
+        scope: "openid profile email offline_access",
+        prompt: "consent",
+        code_challenge: b64url(createHash("sha256").update(verifier).digest()),
+        code_challenge_method: "S256",
+      });
+      const authorize = () =>
+        fetch(`${baseUrl}/api/auth/oauth2/authorize?${query}`, {
+          headers: { cookie },
+          redirect: "manual",
+        });
+      const consent = (oauthQuery: string, extra: object = {}) =>
+        fetch(`${baseUrl}/api/auth/oauth2/consent`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            accept: true,
+            oauth_query: oauthQuery,
+            scope: "openid profile email offline_access",
+            ...extra,
+          }),
+        });
+
+      const redirect = await redirectTarget(await authorize(), baseUrl);
+      expect(redirect.pathname).toBe("/consent");
+      const signedQuery = redirect.search.slice(1);
+      // A signed consent page cannot be used after access is restricted.
+      await db.oauthClient.update({
+        where: { clientId },
+        data: { accessRestricted: true },
+      });
+      expect((await consent(signedQuery)).status).toBe(403);
+      expect((await consent(signedQuery, { client_id: applicationIds[0] })).status).toBe(
+        403,
+      );
+      expect((await authorize()).status).toBe(403);
+
+      const group = await db.mcpGroup.findUniqueOrThrow({
+        where: { name: "vitest-oauth-group" },
+      });
+      await db.applicationGroup.create({ data: { clientId, groupId: group.id } });
+      await db.mcpGroupUser.create({ data: { groupId: group.id, userId: user.id } });
+      const groupRedirect = await redirectTarget(await authorize(), baseUrl);
+      expect(groupRedirect.pathname).toBe("/consent");
+      await db.applicationAccess.create({
+        data: { clientId, userId: user.id, allowed: false },
+      });
+      expect((await authorize()).status).toBe(403);
+      await db.applicationAccess.update({
+        where: { clientId_userId: { clientId, userId: user.id } },
+        data: { allowed: true },
+      });
+      await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
+      const allowedRedirect = await redirectTarget(await authorize(), baseUrl);
+      const accepted = await consent(allowedRedirect.search.slice(1));
+      const acceptedBody = (await accepted.json()) as { url: string };
+      expect(accepted.status, JSON.stringify(acceptedBody)).toBe(200);
+      const code = new URL(acceptedBody.url).searchParams.get("code")!;
+      const ambiguous = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
+        method: "POST",
+        headers: tokenHeaders,
+        body: new URLSearchParams([
+          ["grant_type", "authorization_code"],
+          ["code", code],
+          ["client_id", clientId],
+          ["client_id", applicationIds[0]!],
+        ]),
+      });
+      expect(ambiguous.status).toBe(400);
+      expect(await ambiguous.json()).toMatchObject({
+        error: "invalid_request",
+        error_description: "Duplicate client parameters",
+      });
+      const token = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
+        method: "POST",
+        headers: tokenHeaders,
+        body: new URLSearchParams({
+          ...credentials,
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          redirect_uri: REDIRECT_URI,
+        }),
+      });
+      const tokens = (await token.json()) as {
+        id_token: string;
+        access_token: string;
+        refresh_token: string;
+        scope: string;
+      };
+      expect(token.status, JSON.stringify(tokens)).toBe(200);
+      expect(tokens.id_token).toBeTruthy();
+      expect(tokens.scope).toContain("profile");
+      expect(tokens.refresh_token).toBeTruthy();
+      const userInfo = () =>
+        fetch(`${baseUrl}/api/auth/oauth2/userinfo`, {
+          headers: { authorization: `Bearer ${tokens.access_token}` },
+        });
+      expect((await userInfo()).status).toBe(200);
+      await db.applicationAccess.update({
+        where: { clientId_userId: { clientId, userId: user.id } },
+        data: { allowed: false },
+      });
+      expect((await userInfo()).status).toBe(403);
+      const renewed = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
+        method: "POST",
+        headers: tokenHeaders,
+        body: new URLSearchParams({
+          ...credentials,
+          grant_type: "refresh_token",
+          refresh_token: tokens.refresh_token,
+        }),
+      });
+      expect(renewed.status, await renewed.text()).toBe(403);
+
+      // Administration is protected and accepts policies with complete reference validation.
+      expect(
+        (await fetch(`${baseUrl}/api/admin/applications`, { headers: { cookie } }))
+          .status,
+      ).toBe(403);
+      await db.user.update({ where: { id: user.id }, data: { role: "admin" } });
+      const listing = await fetch(`${baseUrl}/api/admin/applications`, {
+        headers: { cookie },
+      });
+      expect(listing.status).toBe(200);
+      expect(await listing.json()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ clientId, accessRestricted: true }),
+        ]),
+      );
+      const patch = (body: object) =>
+        fetch(`${baseUrl}/api/admin/applications/${encodeURIComponent(clientId)}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify(body),
+        });
+      expect((await patch({ groupIds: ["unknown"] })).status).toBe(404);
+      expect(
+        (await patch({ users: [{ userId: "unknown", allowed: true }] })).status,
+      ).toBe(404);
+      expect(
+        (
+          await patch({
+            users: [
+              { userId: user.id, allowed: true },
+              { userId: user.id, allowed: false },
+            ],
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (await patch({ disabled: true, accessRestricted: true, groupIds: [], users: [] }))
+          .status,
+      ).toBe(200);
+      expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
+      expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);
+      const disabled = await redirectTarget(await authorize(), baseUrl);
+      expect(disabled.searchParams.get("error")).toBeTruthy();
+      expect(disabled.searchParams.has("code")).toBe(false);
+      await db.user.update({ where: { id: user.id }, data: { role: "user" } });
+    },
+  );
 });

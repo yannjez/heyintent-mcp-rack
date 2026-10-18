@@ -64,6 +64,7 @@ export function Layout({ me }: { me: Me }) {
             <div className="nav-group-label">Administration</div>
             {link("/admin/users", "users", "Utilisateurs")}
             {link("/admin/groups", "group", "Groupes")}
+            {link("/admin/applications", "plug", "Applications")}
             {link("/admin/ressources", "server", "Ressources")}
             {link("/admin/logs", "logs", "Logs")}
           </nav>

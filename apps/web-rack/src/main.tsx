@@ -10,6 +10,7 @@ import {
 } from "react-router";
 import { api, ApiError, type Me } from "./api";
 import { Layout } from "./components/Layout";
+import { AdminApplicationsPage } from "./pages/admin/Applications";
 import { AdminGroupsPage } from "./pages/admin/Groups";
 import { AdminLogsPage } from "./pages/admin/Logs";
 import { AdminMcpsPage } from "./pages/admin/Mcps";
@@ -69,6 +70,7 @@ const router = createBrowserRouter([
   {
     element: <Protected admin />,
     children: [
+      { path: "/admin/applications", element: <AdminApplicationsPage /> },
       { path: "/admin/users", element: <Users /> },
       { path: "/admin/groups", element: <AdminGroupsPage /> },
       { path: "/admin/ressources", element: <AdminMcpsPage /> },

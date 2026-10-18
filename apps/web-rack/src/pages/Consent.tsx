@@ -32,11 +32,24 @@ export function ConsentPage() {
   const params = new URLSearchParams(useLocation().search);
   const clientId = params.get("client_id");
   const clientName = useClientName(clientId);
-  const requested = (params.get("scope") ?? "").split(/\s+/).filter(Boolean);
+  const scope = params.get("scope") ?? "";
+  const requested = useMemo(() => scope.split(/\s+/).filter(Boolean), [scope]);
+  const [applicationAllowed, setApplicationAllowed] = useState<boolean | null>(null);
   const [mcps, setMcps] = useState<UserMcp[] | null>(null);
   const [accepted, setAccepted] = useState<Set<string>>(new Set(requested));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setApplicationAllowed(null);
+    if (!clientId) {
+      setApplicationAllowed(false);
+      return;
+    }
+    api<{ allowed: boolean }>(`/api/oauth-clients/${encodeURIComponent(clientId)}`)
+      .then((client) => setApplicationAllowed(client.allowed))
+      .catch(() => setApplicationAllowed(false));
+  }, [clientId]);
 
   useEffect(() => {
     api<UserMcp[]>("/api/mcps")
@@ -81,18 +94,23 @@ export function ConsentPage() {
   async function answer(accept: boolean) {
     setBusy(true);
     setError(null);
-    const result = await authClient.oauth2.consent({
-      accept,
-      ...(accept ? { scope: requested.filter((s) => accepted.has(s)).join(" ") } : {}),
-    });
-    const next = (result.data as { redirect?: boolean; url?: string } | null) ?? {};
-    if (next.url) {
-      if (accept) await finishOAuth(next.url, clientId);
-      else window.location.href = next.url;
-      return;
+    try {
+      const result = await authClient.oauth2.consent({
+        accept,
+        ...(accept ? { scope: requested.filter((s) => accepted.has(s)).join(" ") } : {}),
+      });
+      const next = (result.data as { redirect?: boolean; url?: string } | null) ?? {};
+      if (next.url) {
+        if (accept && !identityOnly) await finishOAuth(next.url, clientId);
+        else window.location.href = next.url;
+        return;
+      }
+      setBusy(false);
+      setError(result.error?.message ?? "Réponse inattendue du serveur.");
+    } catch (e) {
+      setBusy(false);
+      setError((e as Error).message);
     }
-    setBusy(false);
-    setError(result.error?.message ?? "Réponse inattendue du serveur.");
   }
 
   /** Level granted on one MCP, derived from its accepted scopes. */
@@ -120,6 +138,9 @@ export function ConsentPage() {
     });
   }
 
+  const identityOnly =
+    requested.length > 0 && requested.every((scope) => Object.hasOwn(BASE_SCOPES, scope));
+  const hasMcpScopes = groups.length > 0;
   const baseScopes = requested.filter(
     (s) => !s.startsWith("mcp:") && !s.startsWith("cap:"),
   );
@@ -141,13 +162,16 @@ export function ConsentPage() {
       </a>
 
       <header className="consent-head">
-        <span className="consent-eyebrow">Autorisation d'un client MCP</span>
+        <span className="consent-eyebrow">Autorisation d'une application</span>
         <h1>
-          {clientName} <em>demande l'accès</em> à vos ressources.
+          {clientName}{" "}
+          <em>{identityOnly ? "demande à vous connecter" : "demande l’accès"}</em>
+          {!identityOnly && " à vos ressources."}
         </h1>
         <p>
-          Choisissez, ressource par ressource, ce que ce client pourra faire en votre nom. Il n'aura
-          jamais plus de droits que vous, et chaque appel est journalisé à votre nom.
+          {identityOnly
+            ? "Cette application demande à utiliser votre identité pour vous connecter."
+            : "Choisissez les ressources que cette application pourra utiliser en votre nom, dans la limite de vos droits."}
         </p>
         <ul className="consent-facts">
           <li>
@@ -156,7 +180,9 @@ export function ConsentPage() {
           </li>
           <li>
             <Icon name="key" />
-            Jeton nominatif, limité aux ressources cochées
+            {identityOnly
+              ? "Connexion avec votre compte Rack"
+              : "Jeton nominatif, limité aux ressources cochées"}
           </li>
         </ul>
       </header>
@@ -175,47 +201,55 @@ export function ConsentPage() {
         </div>
         <div className="card-body stack">
           {error && <div className="alert error">{error}</div>}
-          <p className="small muted" style={{ margin: 0 }}>
-            Le niveau proposé correspond à ce que ce client demande, dans la limite de vos
-            droits. « Aucun » exclut la ressource de cette autorisation.
-          </p>
-
-          {mcps === null ? (
-            <div className="small muted">Chargement de vos ressources…</div>
-          ) : available.length === 0 ? (
+          {applicationAllowed === false && (
             <div className="alert error">
-              Aucune des ressources demandées ne vous est affectée. Vous pouvez seulement refuser,
-              ou demander l'accès à un administrateur.
-            </div>
-          ) : (
-            <div className="access-matrix">
-              {available.map((group) => {
-                const mcp = group.mcp!;
-                const level = levelOf(group);
-                const max: Access =
-                  group.scopes.write && mcp.access === "write" ? "write" : "read";
-                return (
-                  <div
-                    className={`access-row ${level ? "" : "blocked"}`}
-                    key={group.slug}
-                  >
-                    <McpIcon slug={group.slug} small />
-                    <div className="names">
-                      <strong>{mcp.name}</strong>
-                      <span title={mcp.description}>
-                        {mcp.description || mcp.category || "MCP"}
-                      </span>
-                    </div>
-                    <AccessPicker
-                      value={level}
-                      max={max}
-                      onChange={(next) => setLevel(group, next)}
-                    />
-                  </div>
-                );
-              })}
+              Vous n'avez pas accès à cette application. Contactez un administrateur.
             </div>
           )}
+          {hasMcpScopes && (
+            <p className="small muted" style={{ margin: 0 }}>
+              Le niveau proposé correspond à ce que ce client demande, dans la limite de
+              vos droits. « Aucun » exclut la ressource de cette autorisation.
+            </p>
+          )}
+
+          {hasMcpScopes &&
+            (mcps === null ? (
+              <div className="small muted">Chargement de vos ressources…</div>
+            ) : available.length === 0 ? (
+              <div className="alert error">
+                Aucune des ressources demandées ne vous est affectée. Vous pouvez
+                seulement refuser, ou demander l'accès à un administrateur.
+              </div>
+            ) : (
+              <div className="access-matrix">
+                {available.map((group) => {
+                  const mcp = group.mcp!;
+                  const level = levelOf(group);
+                  const max: Access =
+                    group.scopes.write && mcp.access === "write" ? "write" : "read";
+                  return (
+                    <div
+                      className={`access-row ${level ? "" : "blocked"}`}
+                      key={group.slug}
+                    >
+                      <McpIcon slug={group.slug} small />
+                      <div className="names">
+                        <strong>{mcp.name}</strong>
+                        <span title={mcp.description}>
+                          {mcp.description || mcp.category || "MCP"}
+                        </span>
+                      </div>
+                      <AccessPicker
+                        value={level}
+                        max={max}
+                        onChange={(next) => setLevel(group, next)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
 
           {mcps !== null && unavailable.length > 0 && (
             <div className="tiny muted">
@@ -238,7 +272,11 @@ export function ConsentPage() {
         <div className="card-foot">
           <span className="consent-summary">
             {granted.length === 0 ? (
-              "Aucune ressource sélectionnée"
+              identityOnly ? (
+                "Connexion uniquement"
+              ) : (
+                "Aucune ressource sélectionnée"
+              )
             ) : (
               <>
                 <strong>{granted.length}</strong> ressource{granted.length > 1 ? "s" : ""}
@@ -252,7 +290,11 @@ export function ConsentPage() {
           </button>
           <button
             className="btn accent"
-            disabled={busy || !mcps || granted.length === 0}
+            disabled={
+              busy ||
+              applicationAllowed !== true ||
+              (!identityOnly && (!mcps || granted.length === 0))
+            }
             onClick={() => answer(true)}
           >
             Autoriser
