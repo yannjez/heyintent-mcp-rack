@@ -1,5 +1,5 @@
 export * from "./types.js";
-export { defineMcp } from "./define.js";
+export { defineExternalMcp, defineMcp, type ExternalMcpSpec } from "./define.js";
 export { describeTools } from "./describe.js";
 export { CapabilityDeniedError } from "./errors.js";
 export * from "./grants.js";

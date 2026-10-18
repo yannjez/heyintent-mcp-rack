@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { apiKey } from "@better-auth/api-key";
 import { cimd } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
 import { mcp } from "@better-auth/mcp";
 import type { Db } from "@rack/database";
+import { type Access, mcpScopes, parseMcpScope } from "@rack/mcp-kit";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError, createAuthMiddleware } from "better-auth/api";
@@ -26,10 +28,82 @@ export interface AuthInput {
   /** Scopes advertised to OAuth clients (mcp:<slug>:read|write). */
   extraScopes?: string[];
   trustedOrigins?: string[];
+  /** Apps hosted elsewhere: tokens are issued for `<url>` (UI) and `<url>/mcp`. */
+  externalResources?: { slug: string; name: string; url: string }[];
+  /** Current MCP access of a user, embedded in access tokens as `mcp_access`. */
+  mcpAccesses?: (userId: string) => Promise<Record<string, Access>>;
 }
 
 export function mcpResource(baseUrl: string) {
   return `${baseUrl.replace(/\/$/, "")}/mcp`;
+}
+
+/** External tokens are short-lived so access changes in the rack apply quickly. */
+const EXTERNAL_ACCESS_TOKEN_TTL = 900;
+
+/** OAuth resource identifiers of external apps: their UI and their MCP endpoint. */
+export function externalResourceIdentifiers(externals: { url: string }[] = []) {
+  return externals.flatMap((external) => [external.url, `${external.url}/mcp`]);
+}
+
+/**
+ * Link every existing OAuth client to the given resources. Clients registered
+ * later get them through `clientRegistrationDefaultResources` (CIMD clients also
+ * when their metadata is revalidated); this covers clients registered before an
+ * external app was declared, since per-client resource checks stay enforced.
+ */
+export async function linkClientsToResources(db: Db, identifiers: string[]) {
+  if (identifiers.length === 0) return 0;
+  const [clients, resources, links] = await Promise.all([
+    db.oauthClient.findMany({ select: { clientId: true } }),
+    db.oauthResource.findMany({
+      where: { identifier: { in: identifiers } },
+      select: { identifier: true },
+    }),
+    db.oauthClientResource.findMany({
+      where: { resourceId: { in: identifiers } },
+      select: { clientId: true, resourceId: true },
+    }),
+  ]);
+  const linked = new Set(links.map((link) => `${link.clientId} ${link.resourceId}`));
+  const now = new Date();
+  const data = clients.flatMap((client) =>
+    resources
+      .filter((resource) => !linked.has(`${client.clientId} ${resource.identifier}`))
+      .map((resource) => ({
+        id: randomUUID(),
+        clientId: client.clientId,
+        resourceId: resource.identifier,
+        createdAt: now,
+      })),
+  );
+  if (data.length > 0) {
+    await db.oauthClientResource.createMany({ data, skipDuplicates: true });
+  }
+  return data.length;
+}
+
+/**
+ * Access level per MCP slug that a token may use: what its scopes ask for,
+ * capped by what the user is allowed in the rack.
+ */
+export function grantedMcpAccess(
+  scopes: readonly string[],
+  allowed: Record<string, Access>,
+): Record<string, Access> {
+  const requested: Record<string, Access> = {};
+  for (const scope of scopes) {
+    const parsed = parseMcpScope(scope);
+    if (!parsed) continue;
+    if (requested[parsed.slug] !== "write") requested[parsed.slug] = parsed.access;
+  }
+  const granted: Record<string, Access> = {};
+  for (const [slug, wanted] of Object.entries(requested)) {
+    const permitted = allowed[slug];
+    if (!permitted) continue;
+    granted[slug] = wanted === "write" && permitted === "write" ? "write" : "read";
+  }
+  return granted;
 }
 
 /**
@@ -117,8 +191,23 @@ export function createAuth(db: Db | object, input: AuthInput) {
         consentPage: "/consent",
         resource,
         // Explicit resource row: the Prisma scalar list `allowedScopes` cannot be null.
-        resources: [{ identifier: resource, name: "MCP Accès", allowedScopes: scopes }],
+        resources: [
+          { identifier: resource, name: "MCP Accès", allowedScopes: scopes },
+          ...(input.externalResources ?? []).flatMap((external) =>
+            externalResourceIdentifiers([external]).map((identifier) => ({
+              identifier,
+              name: external.name,
+              allowedScopes: [...BASE_SCOPES, ...mcpScopes(external.slug)],
+              accessTokenTtl: EXTERNAL_ACCESS_TOKEN_TTL,
+            })),
+          ),
+        ],
         resourceSeedMode: "merge",
+        // Per-client resource checks stay on: new clients are linked to external
+        // apps as well as to the rack (mcp() adds its own resource).
+        clientRegistrationDefaultResources: externalResourceIdentifiers(
+          input.externalResources,
+        ),
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
         scopes,
@@ -149,6 +238,13 @@ export function createAuth(db: Db | object, input: AuthInput) {
         customTokenResponseFields: async ({ user }) => {
           if (user) await assertApplicationAccess(user.id);
           return {};
+        },
+        // External apps cannot ask the rack who may use them: tell them in the token.
+        async customAccessTokenClaims({ user, scopes: granted }) {
+          if (!user || !input.mcpAccesses) return {};
+          if (!granted.some((scope) => parseMcpScope(scope))) return {};
+          const mcpAccess = grantedMcpAccess(granted, await input.mcpAccesses(user.id));
+          return { mcp_access: mcpAccess };
         },
       }),
       cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),

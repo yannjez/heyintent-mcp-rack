@@ -9,7 +9,7 @@ services:
     environment:
       - SERVICE_URL_APP_3000
       - DATABASE_URL=postgresql://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/heyintent_rack
-      - BETTER_AUTH_URL=${SERVICE_URL_APP_3000}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-https://mcp-rack.vps02.heyintent.com}
       - BETTER_AUTH_SECRET=${SERVICE_BASE64_64_AUTH}
       - NODE_ENV=production
       - HOST=0.0.0.0
@@ -32,6 +32,7 @@ services:
       - SITE_PUBLIC_API_URL=${SITE_PUBLIC_API_URL:-}
       - SITE_PUBLIC_API_TOKEN=${SITE_PUBLIC_API_TOKEN:-}
       - SAMPLE_GITHUB_TOKEN=${SAMPLE_GITHUB_TOKEN:-}
+      - EXTERNAL_MCPS=${EXTERNAL_MCPS:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -21,7 +21,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 try {
   await app.listen({ port: env.port, host: env.host });
   app.log.info(
-    `MCP Accès ready at ${env.baseUrl} (mcps: ${catalog.map((m) => m.slug).join(", ")})`,
+    `MCP Accès ready at ${env.baseUrl} (mcps: ${app.registry.definitions.map((m) => m.slug).join(", ")})`,
   );
 } catch (error) {
   app.log.error(error);

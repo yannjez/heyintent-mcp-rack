@@ -31,6 +31,8 @@ export interface McpListing {
   settingsSpec: McpSettingSpec[];
   /** Setting keys whose environment variable is set (values never leave the server). */
   configuredSettings: string[];
+  /** Origin of an MCP hosted outside the rack, null for the rack's own. */
+  externalUrl: string | null;
   registeredAt: Date;
   lastSeenAt: Date;
 }
@@ -122,6 +124,7 @@ export class McpRegistry {
         tools: this.tools(record.slug),
         settingsSpec: definition?.settings ?? [],
         configuredSettings: Object.keys(settings).filter((key) => settings[key]),
+        externalUrl: definition?.external?.url ?? null,
         registeredAt: record.registeredAt,
         lastSeenAt: record.lastSeenAt,
       };
