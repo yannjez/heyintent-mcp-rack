@@ -15,7 +15,6 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
       - WEB_DIST=/app/apps/web-rack/dist
-      - ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS:-heyintent.com}
       - ADMIN_EMAILS=${ADMIN_EMAILS:-yann@heyintent.com}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - SMTP_HOST=${SMTP_HOST:-}

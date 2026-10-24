@@ -211,8 +211,7 @@ export function LoginPage() {
                   Recevoir un code
                 </button>
                 <p className="tiny muted">
-                  Comptes Intent, ou comptes externes et clients créés par un
-                  administrateur.
+                  Toutes les adresses email sont acceptées.
                 </p>
               </form>
             ) : (

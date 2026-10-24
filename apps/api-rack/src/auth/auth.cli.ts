@@ -14,7 +14,6 @@ export const auth = createAuth(fakePrisma, {
   baseUrl: "http://localhost:3001",
   secret: "schema-generation-only-secret-0123456789abcdef",
   isProduction: false,
-  allowedEmailDomains: [],
   adminEmails: [],
   sendOtp: async () => {},
 });

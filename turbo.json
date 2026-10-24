@@ -3,7 +3,6 @@
   "concurrency": "16",
   "globalPassThroughEnv": [
     "ADMIN_EMAILS",
-    "ALLOWED_EMAIL_DOMAINS",
     "BETTER_AUTH_SECRET",
     "BETTER_AUTH_URL",
     "DATABASE_URL",

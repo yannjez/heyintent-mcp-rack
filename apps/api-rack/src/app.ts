@@ -64,11 +64,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       env.nodeEnv === "development"
         ? ["http://localhost:5173", "http://127.0.0.1:5173"]
         : [],
-    allowedEmailDomains: env.allowedEmailDomains,
     adminEmails: env.adminEmails,
     sendOtp: options.sendOtp ?? createOtpSender(env, (message) => app.log.info(message)),
-    userExists: async (email) =>
-      Boolean(await db.user.findUnique({ where: { email }, select: { id: true } })),
     extraScopes: registry.definitions.flatMap((d) => mcpScopes(d.slug)),
     externalResources,
     // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.

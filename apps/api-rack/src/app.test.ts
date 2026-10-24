@@ -11,6 +11,11 @@ import { freePort } from "./test-helpers.js";
 const databaseUrl = process.env.DATABASE_URL;
 const EMAIL = "tester@rack.test";
 const CLIENT_EMAIL = "client@partner.example";
+const PUBLIC_EMAILS = [
+  "rack-login-test@gmail.com",
+  "rack-login-test@outlook.com",
+  "rack-login-test@elsewhere.test",
+];
 const GROUP_NAME = "vitest-group";
 const BASE_GROUP = "vitest-base-group";
 
@@ -23,7 +28,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
   let apiKey = "";
 
   beforeAll(async () => {
-    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL] } } });
+    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } } });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.updateMany({
       where: { slug: "sample" },
@@ -37,7 +42,6 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
         NODE_ENV: "development",
         BETTER_AUTH_URL: baseUrl,
         PORT: String(port),
-        ALLOWED_EMAIL_DOMAINS: "rack.test",
         ADMIN_EMAILS: EMAIL,
       }),
       db,
@@ -67,7 +71,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
 
   afterAll(async () => {
     await app?.close();
-    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL] } } });
+    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } } });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.$disconnect();
   });
@@ -172,13 +176,33 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
   });
 
-  it("rejects a foreign email domain", async () => {
+  it.each(PUBLIC_EMAILS)("signs in a new user from any email domain: %s", async (email) => {
     const send = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: baseUrl },
-      body: JSON.stringify({ email: "x@elsewhere.test", type: "sign-in" }),
+      body: JSON.stringify({ email, type: "sign-in" }),
     });
-    expect(send.status).toBe(403);
+    expect(send.status, await send.text()).toBe(200);
+    expect(lastOtp).toMatch(/^\d{6}$/);
+    const verify = await fetch(`${baseUrl}/api/auth/sign-in/email-otp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ email, otp: lastOtp }),
+    });
+    expect(verify.status, await verify.clone().text()).toBe(200);
+    const user = await db.user.findUniqueOrThrow({ where: { email } });
+    expect(user.role).toBe("user");
+    expect(user.emailVerified).toBe(true);
+    expect(await app.registry.userAccesses(user.id)).toEqual({});
+  });
+
+  it("rejects an invalid email address", async () => {
+    const send = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ email: "invalid-email", type: "sign-in" }),
+    });
+    expect(send.status).toBe(400);
   });
 
   it("lists the MCPs the admin may use, with their tools", async () => {

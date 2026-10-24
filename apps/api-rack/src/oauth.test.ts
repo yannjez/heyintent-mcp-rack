@@ -54,7 +54,6 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
         ...process.env,
         BETTER_AUTH_URL: baseUrl,
         PORT: String(port),
-        ALLOWED_EMAIL_DOMAINS: "rack.test",
         ADMIN_EMAILS: "",
       }),
       db,

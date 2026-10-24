@@ -8,7 +8,7 @@ avec des accès nominatifs, en lecture ou en écriture.
 - **Auth & comptes** : connexion par email OTP (en développement, le code s'affiche dans la
   console d'api-rack, même si SMTP est configuré), autodiscover OAuth 2.1 pour les clients MCP
   (Claude Code, Cursor…), clés API par utilisateur. Typologie d'utilisateur **interne / externe /
-  client** ; les comptes externes et clients sont créés par un admin (hors domaine autorisé).
+  client** ; tous les domaines email sont acceptés, et un admin peut aussi créer les comptes.
 - **Disponibilité par groupes** : l'admin affecte des groupes aux MCP, puis des groupes aux
   utilisateurs. Un utilisateur peut appartenir à plusieurs groupes. Seuls les membres d'au moins
   un groupe autorisé peuvent accéder au MCP, y compris les administrateurs. Sans groupe commun,
@@ -57,7 +57,7 @@ pnpm build                      # compile les packages (requis avant dev)
 pnpm dev                        # api-rack sur :3001, web-rack sur :5173 (proxy vers l'API)
 ```
 
-Ouvrir <http://localhost:5173>, se connecter avec un email du domaine autorisé : le code OTP
+Ouvrir <http://localhost:5173>, se connecter avec une adresse email valide : le code OTP
 apparaît dans les logs d'api-rack. En dev, les pages `/login` et `/consent` demandées sur l'origine
 de l'API (`BETTER_AUTH_URL`, où les clients OAuth sont envoyés) sont redirigées vers Vite
 (`WEB_DEV_ORIGIN`). Les comptes listés dans `ADMIN_EMAILS` reçoivent le rôle admin
@@ -223,7 +223,7 @@ anciens JWT doivent se reconnecter. Garder ensuite `BETTER_AUTH_SECRET` stable.
    remplacé manuellement, utiliser des caractères compatibles avec une URL de connexion.
 6. Renseigner `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`
    et `SMTP_FROM` pour recevoir les codes de connexion en production. Ajuster
-   `ADMIN_EMAILS` et `ALLOWED_EMAIL_DOMAINS`, puis les variables des services nécessaires
+   `ADMIN_EMAILS`, puis les variables des services nécessaires
    (`OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `SITE_PUBLIC_API_URL`…).
 7. Déployer. L'image compile l'API et l'interface ; à chaque démarrage, elle applique
    les migrations Prisma avant de lancer l'API. Le compte listé dans `ADMIN_EMAILS`

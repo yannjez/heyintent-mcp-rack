@@ -56,7 +56,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env) {
     baseUrl,
     secret,
     databaseUrl: source.DATABASE_URL,
-    allowedEmailDomains: list(source.ALLOWED_EMAIL_DOMAINS),
     adminEmails: list(source.ADMIN_EMAILS),
     smtp:
       source.SMTP_HOST && source.SMTP_USER && source.SMTP_PASSWORD

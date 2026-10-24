@@ -18,7 +18,6 @@ try {
     baseUrl: env.baseUrl,
     secret: env.secret,
     isProduction: false,
-    allowedEmailDomains: env.allowedEmailDomains,
     adminEmails: env.adminEmails,
     sendOtp: async () => {},
   });
