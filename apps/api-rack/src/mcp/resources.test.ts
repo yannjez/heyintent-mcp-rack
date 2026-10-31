@@ -97,7 +97,9 @@ describe("resource configuration", () => {
       ).rejects.toThrow(/timed out/);
       expect(Date.now() - started).toBeLessThan(5_000);
       // The pending initialize request is aborted, not left dangling upstream.
-      const deadline = Date.now() + 3_000;
+      // Node's fetch may hold the aborted socket until its keep-alive timeout
+      // (undici default 4 s) before destroying it, hence the generous bound.
+      const deadline = Date.now() + 8_000;
       while (sockets.size > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
