@@ -16,6 +16,11 @@ export interface RemoteMcpOptions {
   url: string;
   /** Headers sent with every request (typically an Authorization bearer). */
   headers: Record<string, string>;
+  /**
+   * Add the rack user's identity and access level (`X-Rack-*`) to every
+   * upstream session. Only honoured when `headers` carries a credential.
+   */
+  forwardIdentity?: boolean;
   /** Deadline for opening a live session (initialize + tools/list). */
   connectTimeoutMs?: number;
 }
@@ -158,12 +163,12 @@ export async function probeRemote(
  * see the remote credential.
  *
  * `register` opens one upstream session per rack-side session, bounded by
- * `connectTimeoutMs`, and closes it with it; that session also carries the
- * end user's identity and access level in `X-Rack-*` headers (see
- * `rackIdentityHeaders`). Catalog discovery must not go through `register`
- * (the recording server used by `describeTools` never closes): use
- * `probeRemote` instead, which sends only the static headers so the remote
- * server lists its whole catalog.
+ * `connectTimeoutMs`, and closes it with it. With `forwardIdentity`, that
+ * session also carries the end user's identity and access level in `X-Rack-*`
+ * headers (see `rackIdentityHeaders`). Catalog discovery must not go through
+ * `register` (the recording server used by `describeTools` never closes):
+ * use `probeRemote` instead, which sends only the static headers so the
+ * remote server lists its whole catalog.
  */
 export function createRemoteMcp(options: RemoteMcpOptions): McpDefinition {
   const timeoutMs = options.connectTimeoutMs ?? REMOTE_CONNECT_TIMEOUT_MS;
@@ -176,7 +181,7 @@ export function createRemoteMcp(options: RemoteMcpOptions): McpDefinition {
     async register(server, ctx) {
       const headers = {
         ...options.headers,
-        ...rackIdentityHeaders(ctx, options.headers),
+        ...(options.forwardIdentity ? rackIdentityHeaders(ctx, options.headers) : {}),
       };
       const session = await openRemote(options.url, headers, timeoutMs);
       // Tear the upstream session down with the rack-side session.

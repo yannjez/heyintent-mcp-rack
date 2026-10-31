@@ -143,13 +143,14 @@ describe("remote MCP relay", () => {
     return remote.seen.find((request) => request.method === "initialize");
   }
 
-  function relay(headers: Record<string, string>) {
+  function relay(headers: Record<string, string>, forwardIdentity = true) {
     return createRemoteMcp({
       slug: "matiere-de-lien",
       name: "Matière de Lien",
       description: "",
       url,
       headers,
+      forwardIdentity,
     });
   }
 
@@ -177,6 +178,21 @@ describe("remote MCP relay", () => {
       for (const request of calls) {
         expect(rackHeadersOf(request)["x-rack-user"]).toBe("user-42");
       }
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("keeps the identity to itself for a plain remote relay", async () => {
+    remote.seen.length = 0;
+    const mcp = await testMcp(relay({ authorization: "Bearer rack-secret" }, false), {
+      identity: { userId: "user-42", email: "ada@example.com", via: "oauth" },
+      access: "write",
+    });
+    try {
+      expect(await mcp.toolNames()).toEqual(["ping", "write"]);
+      expect(initialize()?.headers.authorization).toBe("Bearer rack-secret");
+      expect(rackHeadersOf(initialize())).toEqual({});
     } finally {
       await mcp.close();
     }

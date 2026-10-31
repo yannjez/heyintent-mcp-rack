@@ -18,7 +18,7 @@ const PUBLIC_EMAILS = [
 ];
 const GROUP_NAME = "vitest-group";
 const BASE_GROUP = "vitest-base-group";
-const RESOURCE_SLUGS = ["vitest-site", "vitest-remote"];
+const RESOURCE_SLUGS = ["vitest-site", "vitest-remote", "vitest-partner"];
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -755,6 +755,56 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
       body: "{}",
     });
     expect(gone.status).toBe(404);
+  });
+
+  it("adds a partner MCP only with the rack's key for that server", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const withoutKey = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        kind: "partner",
+        slug: "vitest-partner",
+        name: "MCP partenaire",
+        config: { url: `${baseUrl}/mcp/sample` },
+      }),
+    });
+    expect(withoutKey.status).toBe(400);
+    expect(((await withoutKey.json()) as { error: string }).error).toMatch(/key/);
+
+    const create = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        kind: "partner",
+        slug: "vitest-partner",
+        name: "MCP partenaire",
+        config: { url: `${baseUrl}/mcp/sample`, token: apiKey },
+      }),
+    });
+    const created = (await create.json()) as {
+      kind: string;
+      category: string | null;
+      config: { hasToken: boolean };
+      tools: Array<{ name: string }>;
+    };
+    expect(create.status, JSON.stringify(created)).toBe(201);
+    expect(created).toMatchObject({
+      kind: "partner",
+      category: "MCP partenaire",
+      config: { hasToken: true },
+    });
+    expect(created.tools.map((t) => t.name)).toContain("echo");
+
+    // Editing without retyping the key keeps it: still a valid partner.
+    const edit = await fetch(`${baseUrl}/api/admin/mcps/vitest-partner`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        config: { url: `${baseUrl}/mcp/sample`, headerName: "Authorization", token: "" },
+      }),
+    });
+    expect(edit.status, await edit.text()).toBe(200);
   });
 
   it("relays a remote MCP server with the rack's own credential and access levels", async () => {

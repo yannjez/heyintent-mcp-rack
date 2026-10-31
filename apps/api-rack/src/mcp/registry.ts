@@ -11,13 +11,23 @@ import {
   buildResource,
   isResourceKind,
   type McpKind,
+  missingSecretError,
   openConfig,
   presentConfig,
+  RESOURCE_KINDS,
   type ResourceConfig,
   type ResourceKind,
   sealConfig,
 } from "./resources.js";
 import { SecretBox } from "./secrets.js";
+
+/** Catalogue family shown for resources that have no package category. */
+const RESOURCE_CATEGORIES: Record<McpKind, string | null> = {
+  package: null,
+  site: null,
+  remote: "MCP distant",
+  partner: "MCP partenaire",
+};
 
 /** Stored in `mcp_access.access` to block an MCP for a user despite their groups. */
 export const DENIED = "none";
@@ -168,7 +178,7 @@ export class McpRegistry {
       });
     }
     const resources = await this.db.mcp.findMany({
-      where: { kind: { in: ["site", "remote"] } },
+      where: { kind: { in: [...RESOURCE_KINDS] } },
       orderBy: { slug: "asc" },
     });
     // Remote discovery is bounded (see REMOTE_DISCOVERY_TIMEOUT_MS) and runs in
@@ -212,6 +222,9 @@ export class McpRegistry {
     if (this.bySlug.has(input.slug) || this.kinds.has(input.slug)) {
       throw new RegistryError(409, `An MCP with slug "${input.slug}" already exists`);
     }
+    const config = sealConfig(input.resource, this.box);
+    const missing = missingSecretError(input.resource.kind, config);
+    if (missing) throw new RegistryError(400, missing);
     const record = await this.db.mcp.create({
       data: {
         slug: input.slug,
@@ -220,7 +233,7 @@ export class McpRegistry {
         version: "1.0.0",
         kind: input.resource.kind,
         capabilities: input.resource.kind === "site" ? ["data"] : [],
-        config: sealConfig(input.resource, this.box),
+        config,
       },
     });
     await this.load(record);
@@ -240,20 +253,21 @@ export class McpRegistry {
     if (patch.resource && patch.resource.kind !== existing.kind) {
       throw new RegistryError(400, "A resource cannot change kind");
     }
+    const config = patch.resource
+      ? sealConfig(
+          patch.resource,
+          this.box,
+          existing.config as Record<string, string> | null,
+        )
+      : null;
+    const missing = config && missingSecretError(existing.kind, config);
+    if (missing) throw new RegistryError(400, missing);
     const record = await this.db.mcp.update({
       where: { slug },
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.resource
-          ? {
-              config: sealConfig(
-                patch.resource,
-                this.box,
-                existing.config as Record<string, string> | null,
-              ),
-            }
-          : {}),
+        ...(config ? { config } : {}),
         lastSeenAt: new Date(),
       },
     });
@@ -310,7 +324,7 @@ export class McpRegistry {
         slug: record.slug,
         name: record.name,
         description: record.description,
-        category: definition?.category ?? (kind === "remote" ? "MCP distant" : null),
+        category: definition?.category ?? RESOURCE_CATEGORIES[kind],
         version: record.version,
         kind,
         config: presentConfig(record),

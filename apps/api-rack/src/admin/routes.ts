@@ -445,13 +445,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         config: { ...resource.config, apiToken: stored.config.apiToken },
       };
     }
-    if (
-      resource.kind === "remote" &&
-      stored.kind === "remote" &&
-      !resource.config.token
-    ) {
+    if (resource.kind !== "site" && stored.kind !== "site" && !resource.config.token) {
       return {
-        kind: "remote",
+        kind: resource.kind,
         config: { ...resource.config, token: stored.config.token },
       };
     }
@@ -522,7 +518,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   // ----------------------------------------------------------- Resources
 
-  /** Add a public site or a remote MCP server, served at /mcp/<slug> right away. */
+  /** Add a public site or a remote/partner MCP server, served at /mcp/<slug> right away. */
   app.post("/api/admin/resources", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
     const parsed = createResourceSchema.safeParse(request.body);

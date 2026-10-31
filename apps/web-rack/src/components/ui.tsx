@@ -181,6 +181,7 @@ const KIND_ICONS: Record<McpKind, string> = {
   package: "plug",
   site: "globe",
   remote: "cloud",
+  partner: "users",
 };
 
 export function McpIcon({
@@ -199,7 +200,7 @@ export function McpIcon({
   );
 }
 
-/** Small uppercase tag naming the origin of an MCP (package, site, remote). */
+/** Small uppercase tag naming the origin of an MCP (package, site, remote, partner). */
 export function KindTag({ kind }: { kind: McpKind }) {
   return <span className={`resource-kind ${kind}`}>{KIND_NAMES[kind]}</span>;
 }

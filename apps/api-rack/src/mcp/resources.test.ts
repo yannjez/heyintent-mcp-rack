@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { probeRemote } from "./remote.js";
 import {
   buildResource,
+  missingSecretError,
   openConfig,
   parseResourceConfig,
   presentConfig,
@@ -33,6 +34,35 @@ describe("resource configuration", () => {
         },
       },
     });
+    expect(
+      parseResourceConfig("partner", {
+        url: "https://mcp.example/mcp",
+        headerName: "x-api-key",
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        kind: "partner",
+        config: { url: "https://mcp.example/mcp", headerName: "x-api-key", token: "" },
+      },
+    });
+  });
+
+  it("requires the rack's key for a partner MCP, stored or typed", () => {
+    const config = { url: "https://mcp.example/mcp" };
+    const partner = parseResourceConfig("partner", config);
+    const remote = parseResourceConfig("remote", config);
+    if (!partner.ok || !remote.ok) throw new Error("unexpected parse failure");
+    expect(missingSecretError("partner", sealConfig(partner.value, box))).toMatch(/key/);
+    expect(missingSecretError("remote", sealConfig(remote.value, box))).toBeNull();
+    const withKey = parseResourceConfig("partner", { ...config, token: "k" });
+    if (!withKey.ok) throw new Error(withKey.error);
+    const stored = sealConfig(withKey.value, box);
+    expect(missingSecretError("partner", stored)).toBeNull();
+    // An empty secret on update keeps the stored one: still a valid partner.
+    expect(
+      missingSecretError("partner", sealConfig(partner.value, box, stored)),
+    ).toBeNull();
   });
 
   it("seals secrets at rest, keeps them on update, and never presents them", () => {
