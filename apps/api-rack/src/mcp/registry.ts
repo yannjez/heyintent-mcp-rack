@@ -77,7 +77,7 @@ export interface ResourceInput {
   resource: ResourceConfig;
 }
 
-export type RegistryListener = (slug: string) => void;
+export type RegistryListener = (slug: string) => void | Promise<void>;
 
 /**
  * Every MCP the rack serves: packages shipped in the catalog and resources
@@ -143,14 +143,18 @@ export class McpRegistry {
     return this.settingsBySlug.get(slug) ?? {};
   }
 
-  /** Called with the slug whenever a definition is added, replaced or removed. */
+  /**
+   * Called with the slug whenever a definition is added, replaced or removed.
+   * The change completes once every listener has settled, so a resource is
+   * fully usable (OAuth scopes included) when the admin API answers.
+   */
   onChange(listener: RegistryListener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  private notify(slug: string) {
-    for (const listener of this.listeners) listener(slug);
+  private async notify(slug: string) {
+    await Promise.all([...this.listeners].map((listener) => listener(slug)));
   }
 
   /** Upsert declared metadata; `enabled` stays admin-owned. Then load stored resources. */
@@ -195,7 +199,7 @@ export class McpRegistry {
       this.loadErrors.set(record.slug, opened?.error ?? "Unreadable configuration");
       this.bySlug.delete(record.slug);
       this.kinds.set(record.slug, record.kind);
-      this.notify(record.slug);
+      await this.notify(record.slug);
       return;
     }
     const { definition, settings, describe } = buildResource(record, opened.value);
@@ -213,7 +217,7 @@ export class McpRegistry {
         error instanceof Error ? error.message : String(error),
       );
     }
-    this.notify(record.slug);
+    await this.notify(record.slug);
   }
 
   /** Register a site or remote MCP server added by an administrator. */
@@ -287,7 +291,7 @@ export class McpRegistry {
     this.toolsBySlug.delete(slug);
     this.settingsBySlug.delete(slug);
     this.loadErrors.delete(slug);
-    this.notify(slug);
+    await this.notify(slug);
   }
 
   /** Decrypted configuration of a resource (server-side use only). */

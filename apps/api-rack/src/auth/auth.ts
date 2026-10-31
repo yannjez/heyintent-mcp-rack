@@ -323,4 +323,22 @@ export function createAuth(db: Db | object, input: AuthInput) {
 }
 
 export type Auth = ReturnType<typeof createAuth>;
+
+/**
+ * An `Auth` handle that forwards every access to the instance `current`
+ * returns. Better Auth copies its OAuth scope list when it is built, so the
+ * rack rebuilds the instance whenever a resource is added, changed or removed;
+ * routes keep this one handle and always reach the latest instance.
+ */
+export function liveAuth(current: () => Auth): Auth {
+  return new Proxy({} as Auth, {
+    get(_target, property) {
+      const instance = current();
+      const value: unknown = Reflect.get(instance, property, instance);
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(instance)
+        : value;
+    },
+  });
+}
 export type Session = Auth["$Infer"]["Session"];
