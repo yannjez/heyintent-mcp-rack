@@ -123,7 +123,9 @@ export function AdminMcpsPage() {
             const siteConfig =
               mcp.kind === "site" ? (mcp.config as SiteConfigView) : null;
             const remoteConfig =
-              mcp.kind === "remote" ? (mcp.config as RemoteConfigView) : null;
+              mcp.kind === "remote" || mcp.kind === "partner"
+                ? (mcp.config as RemoteConfigView)
+                : null;
             return (
               <article className="card resource-card" key={mcp.slug}>
                 <div className="card-head">
@@ -231,6 +233,12 @@ export function AdminMcpsPage() {
                               <span className="badge warn">aucun</span>
                             )}
                           </dd>
+                          <dt>Identité</dt>
+                          <dd>
+                            {mcp.kind === "partner"
+                              ? "transmise (X-Rack-User, X-Rack-Access, X-Rack-Via)"
+                              : "non transmise"}
+                          </dd>
                         </dl>
                       )}
                       {!isResource && mcp.externalUrl && (
@@ -273,7 +281,7 @@ export function AdminMcpsPage() {
                       </h3>
                       {mcp.tools.length === 0 && (
                         <div className="small muted">
-                          {mcp.kind === "remote"
+                          {remoteConfig
                             ? "Aucun outil connu : le serveur distant n'a pas répondu au dernier chargement."
                             : mcp.externalUrl
                               ? "Les outils sont servis par l'application elle-même."

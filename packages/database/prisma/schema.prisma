@@ -19,8 +19,9 @@ model Mcp {
   version             String        @default("0.0.0")
   enabled             Boolean       @default(true)
   /// "package" (shipped with the rack or declared in EXTERNAL_MCPS), "site"
-  /// (public website driven by the site-public package) or "remote" (external
-  /// MCP server relayed by the rack).
+  /// (public website driven by the site-public package), "remote" (external
+  /// MCP server relayed by the rack with its key) or "partner" (same, and the
+  /// rack also forwards the user's identity and access level).
   kind                String        @default("package")
   /// Connection parameters entered by an admin for a site or remote resource;
   /// secret fields are encrypted at rest.

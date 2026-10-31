@@ -4,6 +4,7 @@ import {
   api,
   KIND_NAMES,
   type RemoteConfigView,
+  RESOURCE_KINDS,
   type ResourceKind,
   type ResourceProbe,
   type SiteConfigView,
@@ -32,8 +33,13 @@ const KIND_HELP: Record<ResourceKind, { title: string; text: string; icon: strin
   },
   remote: {
     title: "MCP distant",
-    text: "Un serveur MCP existant (HTTP streamable). Le rack le relaie avec sa propre clé et vos règles d'accès.",
+    text: "Un serveur MCP existant (HTTP streamable). Le rack le relaie avec sa propre clé et vos règles d'accès ; le serveur ne sait pas qui appelle.",
     icon: "cloud",
+  },
+  partner: {
+    title: "MCP partenaire",
+    text: "Comme un MCP distant, mais le rack transmet aussi l'identité et le niveau d'accès de l'utilisateur (en-têtes X-Rack-*). Clé obligatoire.",
+    icon: "users",
   },
 };
 
@@ -91,6 +97,7 @@ export function ConnectionFields({
   }
 
   const isSite = draft.kind === "site";
+  const isPartner = draft.kind === "partner";
   return (
     <>
       <label className="field">
@@ -107,7 +114,9 @@ export function ConnectionFields({
         <span className="hint">
           {isSite
             ? "URL de base de l'API : le rack appelle <base>/content avec le jeton ci-dessous."
-            : "Transport HTTP streamable. Le rack s'y connecte avec la clé ci-dessous, jamais avec celle de l'utilisateur, et transmet l'identité et le niveau d'accès de l'utilisateur dans des en-têtes X-Rack-*."}
+            : isPartner
+              ? "Transport HTTP streamable. Le rack s'y connecte avec la clé ci-dessous, jamais avec celle de l'utilisateur, et transmet l'identité et le niveau d'accès de l'utilisateur dans des en-têtes X-Rack-*."
+              : "Transport HTTP streamable. Le rack s'y connecte avec la clé ci-dessous, jamais avec celle de l'utilisateur."}
         </span>
       </label>
       {!isSite && (
@@ -129,13 +138,16 @@ export function ConnectionFields({
         <span className="hint">
           {hasStoredToken
             ? "— un secret est enregistré ; laissez vide pour le conserver"
-            : "— facultatif, chiffré côté rack, jamais affiché"}
+            : isPartner
+              ? "— obligatoire : l'identité n'est transmise qu'avec cette clé ; chiffrée côté rack, jamais affichée"
+              : "— facultatif, chiffré côté rack, jamais affiché"}
         </span>
         <input
           type="password"
           value={draft.token}
           onChange={(e) => onChange({ token: e.target.value })}
           autoComplete="new-password"
+          required={isPartner && !hasStoredToken}
           placeholder={hasStoredToken ? "••••••••" : ""}
         />
       </label>
@@ -226,7 +238,7 @@ export function NewResourceModal({
       <form className="stack" onSubmit={submit} id="new-resource">
         {error && <div className="alert error">{error}</div>}
         <fieldset className="kind-options">
-          {(["site", "remote"] as const).map((kind) => (
+          {RESOURCE_KINDS.map((kind) => (
             <label
               key={kind}
               className={`kind-option ${draft.kind === kind ? "is-selected" : ""}`}
@@ -255,7 +267,13 @@ export function NewResourceModal({
               onChange={(e) => update({ name: e.target.value })}
               required
               autoFocus
-              placeholder={draft.kind === "site" ? "Site heyintent.com" : "MCP GitHub"}
+              placeholder={
+                draft.kind === "site"
+                  ? "Site heyintent.com"
+                  : draft.kind === "partner"
+                    ? "Matière de Lien"
+                    : "MCP GitHub"
+              }
             />
           </label>
           <label className="field" style={{ flex: 1.3 }}>
@@ -293,7 +311,13 @@ export function NewResourceModal({
           </button>
           <button
             className="btn accent"
-            disabled={busy || !draft.name.trim() || !draft.slug || !draft.url}
+            disabled={
+              busy ||
+              !draft.name.trim() ||
+              !draft.slug ||
+              !draft.url ||
+              (draft.kind === "partner" && !draft.token)
+            }
           >
             Ajouter
           </button>

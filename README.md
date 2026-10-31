@@ -19,11 +19,12 @@ avec des accès nominatifs, en lecture ou en écriture.
   En lecture, les tools d'écriture ne sont pas exposés au client.
 - **Ressources ajoutées par un admin** : depuis Administration › Applications et ressources, un
   admin peut **ajouter**, sans redéploiement, un **Site** (site public piloté par le package
-  `site-public`, avec sa propre URL d'API et son jeton) ou un **MCP distant** (serveur MCP HTTP
-  existant, relayé par le rack avec la clé du rack et les règles d'accès ci-dessus ; le relais
-  transmet aussi l'identité et le niveau d'accès de l'utilisateur dans les en-têtes `X-Rack-User`,
-  `X-Rack-User-Email`, `X-Rack-Access`, `X-Rack-Slug` et `X-Rack-Via`, uniquement accompagnés de
-  la clé de la ressource : le serveur distant doit les ignorer si la clé ne correspond pas). Les
+  `site-public`, avec sa propre URL d'API et son jeton), un **MCP distant** (serveur MCP HTTP
+  existant, relayé par le rack avec la clé du rack et les règles d'accès ci-dessus ; le serveur ne
+  sait pas qui appelle) ou un **MCP partenaire** (même relais, mais le rack transmet en plus
+  l'identité et le niveau d'accès de l'utilisateur dans les en-têtes `X-Rack-User`,
+  `X-Rack-User-Email`, `X-Rack-Access`, `X-Rack-Slug` et `X-Rack-Via` ; la clé est obligatoire et
+  le serveur distant doit ignorer ces en-têtes si elle ne correspond pas). Les
   secrets sont chiffrés en base (AES-256-GCM, clé dérivée de `ENCRYPTION_KEY` ou à défaut
   `BETTER_AUTH_SECRET`), un bouton « Tester la connexion » vérifie les paramètres avant
   enregistrement, et les scopes OAuth `mcp:<slug>:read|write` sont publiés immédiatement (un
@@ -170,14 +171,15 @@ Chaque MCP déclare dans `settings` la variable qu'il attend (`SITE_PUBLIC_API_U
 Variable absente = **mode démo** sur des données factices. Changer une valeur demande un
 redémarrage de `api-rack`. La liste complète est dans [.env.example](.env.example).
 
-Pour un **MCP distant**, la clé est celle saisie dans la ressource, jamais celle de l'utilisateur.
-Chaque session amont porte en plus l'utilisateur du rack et son niveau d'accès dans les en-têtes
+Pour un **MCP distant** ou **partenaire**, la clé est celle saisie dans la ressource, jamais
+celle de l'utilisateur. Un MCP distant ne reçoit rien d'autre. Pour un MCP partenaire, chaque
+session amont porte en plus l'utilisateur du rack et son niveau d'accès dans les en-têtes
 `X-Rack-User`, `X-Rack-User-Email` (absent si inconnu), `X-Rack-Access` (`read` ou `write`),
 `X-Rack-Slug` et `X-Rack-Via` (`apikey`, `oauth` ou `session`), pour que le serveur distant
 journalise l'appelant et filtre à son tour ses outils d'écriture. Ces en-têtes ne sont jamais
-envoyés sans la clé de la ressource, et le serveur distant doit les ignorer si la clé ne
-correspond pas. La découverte du catalogue (chargement du registre, « Tester la connexion »)
-n'envoie que la clé, sans identité.
+envoyés sans la clé de la ressource (elle est obligatoire pour ce type), et le serveur distant
+doit les ignorer si la clé ne correspond pas. La découverte du catalogue (chargement du registre,
+« Tester la connexion ») n'envoie que la clé, sans identité.
 
 ### MCP externes
 

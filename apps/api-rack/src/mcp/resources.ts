@@ -5,8 +5,12 @@ import * as z from "zod";
 import { createRemoteMcp, probeRemote, type RemoteToolSummary } from "./remote.js";
 import type { SecretBox } from "./secrets.js";
 
-/** Resource kinds an administrator may add; packages are shipped with the rack. */
-export const RESOURCE_KINDS = ["site", "remote"] as const;
+/**
+ * Resource kinds an administrator may add; packages are shipped with the rack.
+ * "remote" relays an MCP server with the rack's key only; "partner" does the
+ * same and also tells the server who is calling (`X-Rack-*` headers).
+ */
+export const RESOURCE_KINDS = ["site", "remote", "partner"] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 export type McpKind = "package" | ResourceKind;
 
@@ -39,12 +43,18 @@ export const remoteConfigSchema = z.object({
 export type SiteConfig = z.infer<typeof siteConfigSchema>;
 export type RemoteConfig = z.infer<typeof remoteConfigSchema>;
 export type ResourceConfig =
-  { kind: "site"; config: SiteConfig } | { kind: "remote"; config: RemoteConfig };
+  | { kind: "site"; config: SiteConfig }
+  | { kind: "remote"; config: RemoteConfig }
+  | { kind: "partner"; config: RemoteConfig };
 
 /** Stored JSON shape (secret fields sealed). */
 type StoredConfig = Record<string, string>;
 
-const SECRET_FIELDS: Record<ResourceKind, string> = { site: "apiToken", remote: "token" };
+const SECRET_FIELDS: Record<ResourceKind, string> = {
+  site: "apiToken",
+  remote: "token",
+  partner: "token",
+};
 
 export function parseResourceConfig(
   kind: ResourceKind,
@@ -62,6 +72,21 @@ export function parseResourceConfig(
         ? { kind, config: parsed.data as SiteConfig }
         : { kind, config: parsed.data as RemoteConfig },
   };
+}
+
+/**
+ * A partner MCP only makes sense with the rack's key for that server: the
+ * identity headers are never sent without it. Checked on the stored config,
+ * after an empty secret was resolved against the previous one.
+ */
+export function missingSecretError(
+  kind: ResourceKind,
+  stored: StoredConfig,
+): string | null {
+  if (kind === "partner" && !stored.token) {
+    return "A partner MCP needs the rack's key for that server: the user identity is only sent with it";
+  }
+  return null;
 }
 
 /** Encrypt the secret field before storing; an empty secret keeps `previous`'s. */
@@ -162,6 +187,7 @@ export function buildResource(
       version: record.version,
       url: resource.config.url,
       headers,
+      forwardIdentity: resource.kind === "partner",
     }),
     settings: {},
     describe: () =>

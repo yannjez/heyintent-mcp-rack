@@ -81,15 +81,17 @@ export interface SettingSpec {
 
 /**
  * "package": shipped with the rack or declared in EXTERNAL_MCPS.
- * "site" / "remote": resources added by an admin from the catalogue.
+ * "site" / "remote" / "partner": resources added by an admin from the catalogue.
+ * A partner MCP is a remote MCP that also receives the user's identity.
  */
-export type McpKind = "package" | "site" | "remote";
+export type McpKind = "package" | "site" | "remote" | "partner";
 export type ResourceKind = Exclude<McpKind, "package">;
-export const RESOURCE_KINDS: ResourceKind[] = ["site", "remote"];
+export const RESOURCE_KINDS: ResourceKind[] = ["site", "remote", "partner"];
 export const KIND_NAMES: Record<McpKind, string> = {
   package: "Package du rack",
   site: "Site",
   remote: "MCP distant",
+  partner: "MCP partenaire",
 };
 
 export interface SiteConfigView {
