@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Test database (GitHub service container below) and the secret loadEnv() requires.
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/heyintent_rack
+  BETTER_AUTH_SECRET: ci-only-secret-0123456789-0123456789-0123456789
+  BETTER_AUTH_URL: http://localhost:3001
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  validate:
+    name: Lint · build · typecheck · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: heyintent_rack
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d heyintent_rack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        # Version read from the "packageManager" field of package.json.
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      # Turbo runs lint/typecheck alongside build: the Prisma client must exist first.
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply database migrations
+        run: pnpm --filter @rack/database exec prisma migrate deploy
+
+      - name: Lint, build, typecheck, test
+        run: pnpm validate

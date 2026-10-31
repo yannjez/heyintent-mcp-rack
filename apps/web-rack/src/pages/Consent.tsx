@@ -274,7 +274,7 @@ export function ConsentPage() {
                       className={`access-row ${level ? "" : "blocked"}`}
                       key={group.slug}
                     >
-                      <McpIcon slug={group.slug} small />
+                      <McpIcon slug={group.slug} kind={mcp.kind} small />
                       <div className="names">
                         <strong>{mcp.name}</strong>
                         <span title={mcp.description}>

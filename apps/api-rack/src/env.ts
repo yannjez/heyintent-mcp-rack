@@ -55,6 +55,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env) {
     host: source.HOST ?? "127.0.0.1",
     baseUrl,
     secret,
+    /** Encrypts the credentials of admin-added resources at rest (defaults to the auth secret). */
+    resourceSecret: source.ENCRYPTION_KEY?.trim() || secret,
     databaseUrl: source.DATABASE_URL,
     adminEmails: list(source.ADMIN_EMAILS),
     smtp:

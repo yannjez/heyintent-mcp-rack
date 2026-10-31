@@ -12,7 +12,13 @@ import type { Auth } from "../auth/auth.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
 import { presentKey } from "../keys/routes.js";
-import type { McpRegistry } from "../mcp/registry.js";
+import { type McpRegistry, RegistryError } from "../mcp/registry.js";
+import {
+  parseResourceConfig,
+  probeResource,
+  RESOURCE_KINDS,
+  type ResourceConfig,
+} from "../mcp/resources.js";
 
 export interface AdminRoutesDeps {
   auth: Auth;
@@ -23,6 +29,30 @@ export interface AdminRoutesDeps {
 
 const patchMcpSchema = z.object({
   enabled: z.boolean().optional(),
+  /** Resources only (sites, remote MCP): packages keep their declared metadata. */
+  name: z.string().trim().min(1).max(100).optional(),
+  description: z.string().trim().max(500).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+});
+
+const SLUG = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+const createResourceSchema = z.object({
+  kind: z.enum(RESOURCE_KINDS),
+  slug: z
+    .string()
+    .trim()
+    .regex(SLUG, "Slug: lowercase letters, digits and dashes (2 to 63 characters)"),
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().max(500).default(""),
+  config: z.record(z.string(), z.unknown()).default({}),
+});
+
+const probeResourceSchema = z.object({
+  kind: z.enum(RESOURCE_KINDS),
+  /** Existing resource whose stored secret applies when none is typed. */
+  slug: z.string().trim().max(63).optional(),
+  config: z.record(z.string(), z.unknown()).default({}),
 });
 
 const createUserSchema = z.object({
@@ -125,6 +155,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         description: mcp.description,
         category: mcp.category,
         version: mcp.version,
+        kind: mcp.kind,
         access: accesses[mcp.slug],
         tools: mcp.tools,
         url: mcpUrl(mcp),
@@ -379,23 +410,152 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     });
   });
 
+  /** One listing entry, as GET /api/admin/mcps returns it. */
+  async function presentMcp(slug: string) {
+    const [mcps, links] = await Promise.all([
+      deps.registry.list(),
+      deps.db.mcpGroupMcp.findMany({
+        where: { mcp: { slug } },
+        include: { group: { include: { users: { select: { userId: true } } } } },
+      }),
+    ]);
+    const mcp = mcps.find((m) => m.slug === slug);
+    if (!mcp) return null;
+    return {
+      ...mcp,
+      url: mcpUrl(mcp),
+      userCount: new Set(links.flatMap((link) => link.group.users.map((u) => u.userId)))
+        .size,
+      groupCount: links.length,
+      groups: links.map((link) => ({ id: link.groupId, name: link.group.name })),
+    };
+  }
+
+  /** Secrets typed as "" mean "keep the stored one" when probing an existing resource. */
+  async function withStoredSecret(
+    resource: ResourceConfig,
+    slug: string | undefined,
+  ): Promise<ResourceConfig> {
+    if (!slug) return resource;
+    const stored = await deps.registry.resourceConfig(slug);
+    if (!stored || stored.kind !== resource.kind) return resource;
+    if (resource.kind === "site" && stored.kind === "site" && !resource.config.apiToken) {
+      return {
+        kind: "site",
+        config: { ...resource.config, apiToken: stored.config.apiToken },
+      };
+    }
+    if (
+      resource.kind === "remote" &&
+      stored.kind === "remote" &&
+      !resource.config.token
+    ) {
+      return {
+        kind: "remote",
+        config: { ...resource.config, token: stored.config.token },
+      };
+    }
+    return resource;
+  }
+
+  function registryFailure(reply: FastifyReply, error: unknown) {
+    if (error instanceof RegistryError)
+      return jsonError(reply, error.status, error.message);
+    throw error;
+  }
+
   app.patch<{ Params: { slug: string } }>(
     "/api/admin/mcps/:slug",
     async (request, reply) => {
       if (!(await requireAdmin(request, reply))) return;
       const parsed = patchMcpSchema.safeParse(request.body);
       if (!parsed.success) return invalid(reply, parsed.error);
-      const registered = await deps.registry.get(request.params.slug);
-      if (!registered) return jsonError(reply, 404, "Unknown MCP");
+      const slug = request.params.slug;
+      const record = await deps.db.mcp.findUnique({ where: { slug } });
+      if (!record) return jsonError(reply, 404, "Unknown MCP");
 
-      const { enabled } = parsed.data;
-      const updated = await deps.db.mcp.update({
-        where: { slug: request.params.slug },
-        data: { ...(enabled !== undefined ? { enabled } : {}) },
-      });
-      return { slug: updated.slug, enabled: updated.enabled };
+      const { enabled, name, description, config } = parsed.data;
+      const kind = deps.registry.kind(slug) ?? "package";
+      if (
+        kind === "package" &&
+        (name !== undefined || description !== undefined || config)
+      ) {
+        return jsonError(reply, 400, "Packages shipped with the rack cannot be edited");
+      }
+      if (enabled !== undefined) {
+        await deps.db.mcp.update({ where: { slug }, data: { enabled } });
+      }
+      if (
+        kind !== "package" &&
+        (name !== undefined || description !== undefined || config)
+      ) {
+        let resource: ResourceConfig | undefined;
+        if (config) {
+          const parsedConfig = parseResourceConfig(kind, config);
+          if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
+          resource = parsedConfig.value;
+        }
+        try {
+          await deps.registry.updateResource(slug, {
+            ...(name !== undefined ? { name } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(resource ? { resource } : {}),
+          });
+        } catch (error) {
+          return registryFailure(reply, error);
+        }
+      }
+      return presentMcp(slug);
     },
   );
+
+  /** Remove a site or remote MCP added by an admin (packages stay). */
+  app.delete<{ Params: { slug: string } }>(
+    "/api/admin/mcps/:slug",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      try {
+        await deps.registry.removeResource(request.params.slug);
+      } catch (error) {
+        return registryFailure(reply, error);
+      }
+      return { deleted: true };
+    },
+  );
+
+  // ----------------------------------------------------------- Resources
+
+  /** Add a public site or a remote MCP server, served at /mcp/<slug> right away. */
+  app.post("/api/admin/resources", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const parsed = createResourceSchema.safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { kind, slug, name, description, config } = parsed.data;
+    const parsedConfig = parseResourceConfig(kind, config);
+    if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
+    try {
+      await deps.registry.addResource({
+        slug,
+        name,
+        description,
+        resource: parsedConfig.value,
+      });
+    } catch (error) {
+      return registryFailure(reply, error);
+    }
+    return reply.status(201).send(await presentMcp(slug));
+  });
+
+  /** Try the connection parameters before saving them (or after, with the stored secret). */
+  app.post("/api/admin/resources/probe", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const parsed = probeResourceSchema.safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const parsedConfig = parseResourceConfig(parsed.data.kind, parsed.data.config);
+    if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
+    const resource = await withStoredSecret(parsedConfig.value, parsed.data.slug);
+    return probeResource(resource);
+  });
 
   // ---------------------------------------------------------------- Users
 

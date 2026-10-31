@@ -17,6 +17,14 @@ avec des accès nominatifs, en lecture ou en écriture.
   **lecture / lecture & écriture** par utilisateur. Les groupes ne portent aucun niveau de droit.
   Les clés API et consentements OAuth ne peuvent jamais dépasser les droits de l'utilisateur.
   En lecture, les tools d'écriture ne sont pas exposés au client.
+- **Ressources ajoutées par un admin** : depuis Administration › Applications et ressources, un
+  admin peut **ajouter**, sans redéploiement, un **Site** (site public piloté par le package
+  `site-public`, avec sa propre URL d'API et son jeton) ou un **MCP distant** (serveur MCP HTTP
+  existant, relayé par le rack avec la clé du rack et les règles d'accès ci-dessus). Les secrets
+  sont chiffrés en base (AES-256-GCM, clé dérivée de `ENCRYPTION_KEY` ou à défaut
+  `BETTER_AUTH_SECRET`), un bouton « Tester la connexion » vérifie les paramètres avant
+  enregistrement, et les scopes OAuth `mcp:<slug>:read|write` sont publiés immédiatement (un
+  client OAuth enregistré avant l'ajout doit se réenregistrer pour les demander).
 - **MCP** : un MCP est un package `mcps/<slug>` exposé sur `/mcp/<slug>`, enregistré en base au
   démarrage, administré (activation, paramètres de connexion chiffrés) et journalisé (page Logs).
   - `site-public` — contenu du site public heyintent.com (pages, actualités, événements) :
@@ -34,7 +42,8 @@ TypeScript strict ESM · pnpm workspaces · Turborepo · Fastify 5 · Better Aut
 ```
 apps/api-rack      Fastify : auth, OAuth, clés, admin REST, /mcp/<slug>, sert le build web en prod
 apps/web-rack      React/Vite : login OTP, consent OAuth, Mon espace (Mes ressources, Mes clés),
-                   Administration (Utilisateurs, Groupes, Ressources, Logs)
+                   Administration (Utilisateurs, Groupes, Applications et ressources, Logs) —
+                   design system Intent (Inter / Space Grotesk / JetBrains Mono via Fontsource)
 packages/database  Prisma (schéma Better Auth + Mcp, McpAccess, McpGroup, McpGroupMcp, McpGroupUser, McpData, ToolCall)
 packages/mcp-kit   defineMcp(), types Access/Identity/ToolServices, describeTools(), helpers
 packages/tools     services llm / image / github / data + journal des appels
@@ -177,6 +186,14 @@ au rack. On la déclare dans `EXTERNAL_MCPS` (tableau JSON `slug`, `name`, `url`
 L'application vérifie elle-même le JWT avec la JWKS du rack (`iss` = `<BETTER_AUTH_URL>/api/auth`,
 `aud` = sa propre ressource) puis lit `mcp_access`. Le rack ne sert pas de route
 `/mcp/<slug>` pour elle, et les clés `rk_…` ne s'y appliquent pas.
+
+### Tester un MCP
+
+`@rack/mcp-kit/testing` fournit `testMcp(definition, { settings, access, identity, tools })` :
+la définition tourne sur un `McpServer` en mémoire relié à un `Client` du SDK, avec un service
+`data` en mémoire et des services `llm` / `image` / `github` factices fournis par le test. Sans
+`settings`, chaque MCP tourne en mode sandbox : les tests des packages `mcps/*` n'ont besoin ni
+de base, ni de réseau. Voir `mcps/sample/src/index.test.ts` pour un exemple complet.
 
 ## Commandes
 

@@ -210,9 +210,7 @@ export function LoginPage() {
                 <button className="btn accent" disabled={busy}>
                   Recevoir un code
                 </button>
-                <p className="tiny muted">
-                  Toutes les adresses email sont acceptées.
-                </p>
+                <p className="tiny muted">Toutes les adresses email sont acceptées.</p>
               </form>
             ) : (
               <form className="stack" onSubmit={verify}>

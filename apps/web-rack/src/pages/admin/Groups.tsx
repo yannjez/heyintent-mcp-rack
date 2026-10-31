@@ -33,7 +33,7 @@ function McpAccessMatrix({
     <div className="access-matrix">
       {mcps.map((mcp) => (
         <div className="access-row" key={mcp.slug}>
-          <McpIcon slug={mcp.slug} small />
+          <McpIcon slug={mcp.slug} kind={mcp.kind} small />
           <div className="names">
             <strong>{mcp.name}</strong>
             <span>

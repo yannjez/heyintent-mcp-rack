@@ -18,6 +18,7 @@ const PUBLIC_EMAILS = [
 ];
 const GROUP_NAME = "vitest-group";
 const BASE_GROUP = "vitest-base-group";
+const RESOURCE_SLUGS = ["vitest-site", "vitest-remote"];
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -28,8 +29,11 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
   let apiKey = "";
 
   beforeAll(async () => {
-    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } } });
+    await db.user.deleteMany({
+      where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } },
+    });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
+    await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
     await db.mcp.updateMany({
       where: { slug: "sample" },
       data: { enabled: true, allowedCapabilities: [] },
@@ -71,8 +75,11 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
 
   afterAll(async () => {
     await app?.close();
-    await db.user.deleteMany({ where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } } });
+    await db.user.deleteMany({
+      where: { email: { in: [EMAIL, CLIENT_EMAIL, ...PUBLIC_EMAILS] } },
+    });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
+    await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
     await db.$disconnect();
   });
 
@@ -176,25 +183,28 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
   });
 
-  it.each(PUBLIC_EMAILS)("signs in a new user from any email domain: %s", async (email) => {
-    const send = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: baseUrl },
-      body: JSON.stringify({ email, type: "sign-in" }),
-    });
-    expect(send.status, await send.text()).toBe(200);
-    expect(lastOtp).toMatch(/^\d{6}$/);
-    const verify = await fetch(`${baseUrl}/api/auth/sign-in/email-otp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: baseUrl },
-      body: JSON.stringify({ email, otp: lastOtp }),
-    });
-    expect(verify.status, await verify.clone().text()).toBe(200);
-    const user = await db.user.findUniqueOrThrow({ where: { email } });
-    expect(user.role).toBe("user");
-    expect(user.emailVerified).toBe(true);
-    expect(await app.registry.userAccesses(user.id)).toEqual({});
-  });
+  it.each(PUBLIC_EMAILS)(
+    "signs in a new user from any email domain: %s",
+    async (email) => {
+      const send = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: baseUrl },
+        body: JSON.stringify({ email, type: "sign-in" }),
+      });
+      expect(send.status, await send.text()).toBe(200);
+      expect(lastOtp).toMatch(/^\d{6}$/);
+      const verify = await fetch(`${baseUrl}/api/auth/sign-in/email-otp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: baseUrl },
+        body: JSON.stringify({ email, otp: lastOtp }),
+      });
+      expect(verify.status, await verify.clone().text()).toBe(200);
+      const user = await db.user.findUniqueOrThrow({ where: { email } });
+      expect(user.role).toBe("user");
+      expect(user.emailVerified).toBe(true);
+      expect(await app.registry.userAccesses(user.id)).toEqual({});
+    },
+  );
 
   it("rejects an invalid email address", async () => {
     const send = await fetch(`${baseUrl}/api/auth/email-otp/send-verification-otp`, {
@@ -602,5 +612,232 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
       owner: { email: string };
     }>;
     expect(keys.find((k) => k.name === "test key")?.owner.email).toBe(EMAIL);
+  });
+
+  it("lets the admin add a public site resource, served without a restart", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const refused = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ kind: "site", slug: "sample", name: "Clash", config: {} }),
+    });
+    expect(refused.status).toBe(400);
+    const create = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        kind: "site",
+        slug: "vitest-site",
+        name: "Site de test",
+        description: "Un site ajouté par l'admin",
+        config: { apiUrl: "http://127.0.0.1:9/api", apiToken: "secret-token" },
+      }),
+    });
+    const created = (await create.json()) as {
+      slug: string;
+      kind: string;
+      config: { apiUrl: string; hasToken: boolean };
+      tools: Array<{ name: string }>;
+      url: string;
+    };
+    expect(create.status, JSON.stringify(created)).toBe(201);
+    expect(created).toMatchObject({
+      slug: "vitest-site",
+      kind: "site",
+      config: { apiUrl: "http://127.0.0.1:9/api", hasToken: true },
+      url: `${baseUrl}/mcp/vitest-site`,
+    });
+    expect(created.tools.map((t) => t.name)).toContain("list_content");
+    // The secret is encrypted at rest, and the same slug is refused twice.
+    const row = await db.mcp.findUniqueOrThrow({ where: { slug: "vitest-site" } });
+    expect((row.config as { apiToken: string }).apiToken).toMatch(/^enc:v1:/);
+    const dup = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        kind: "site",
+        slug: "vitest-site",
+        name: "Encore",
+        config: { apiUrl: "http://127.0.0.1:9/api" },
+      }),
+    });
+    expect(dup.status).toBe(409);
+
+    // OAuth clients may now ask for its scopes.
+    const pr = (await (
+      await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`)
+    ).json()) as { scopes_supported?: string[] };
+    expect(pr.scopes_supported).toContain("mcp:vitest-site:write");
+
+    // Availability still goes through groups; the site then answers over MCP.
+    const baseGroup = await db.mcpGroup.findUniqueOrThrow({
+      where: { name: BASE_GROUP },
+    });
+    await fetch(`${baseUrl}/api/admin/mcps/vitest-site/groups/${baseGroup.id}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    const keyResponse = await fetch(`${baseUrl}/api/keys`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "site key", mcps: {} }),
+    });
+    const { key } = (await keyResponse.json()) as { key: string };
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp/vitest-site`), {
+        requestInit: { headers: { authorization: `Bearer ${key}` } },
+      }),
+    );
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("list_content");
+    // The configured API is unreachable: the error is reported, not thrown.
+    const listed = await client.callTool({ name: "list_content", arguments: {} });
+    expect(listed.isError).toBe(true);
+    await client.close();
+
+    const probe = (await (
+      await fetch(`${baseUrl}/api/admin/resources/probe`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          kind: "site",
+          slug: "vitest-site",
+          config: { apiUrl: "http://127.0.0.1:9/api" },
+        }),
+      })
+    ).json()) as { ok: boolean };
+    expect(probe.ok).toBe(false);
+
+    // Editing keeps the stored secret when none is typed; packages are read-only.
+    const patch = await fetch(`${baseUrl}/api/admin/mcps/vitest-site`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        name: "Site renommé",
+        config: { apiUrl: "http://127.0.0.1:9/v2", apiToken: "" },
+      }),
+    });
+    expect(await patch.json()).toMatchObject({
+      name: "Site renommé",
+      config: { apiUrl: "http://127.0.0.1:9/v2", hasToken: true },
+    });
+    const locked = await fetch(`${baseUrl}/api/admin/mcps/sample`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "Nope" }),
+    });
+    expect(locked.status).toBe(400);
+    const keep = await fetch(`${baseUrl}/api/admin/mcps/sample`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(keep.status).toBe(404);
+
+    const remove = await fetch(`${baseUrl}/api/admin/mcps/vitest-site`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(remove.status).toBe(200);
+    const gone = await fetch(`${baseUrl}/mcp/vitest-site`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(gone.status).toBe(404);
+  });
+
+  it("relays a remote MCP server with the rack's own credential and access levels", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    // The rack's sample MCP stands in for the remote server, reached with the write key.
+    const create = await fetch(`${baseUrl}/api/admin/resources`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        kind: "remote",
+        slug: "vitest-remote",
+        name: "MCP distant",
+        config: { url: `${baseUrl}/mcp/sample`, token: apiKey },
+      }),
+    });
+    const created = (await create.json()) as {
+      kind: string;
+      config: { url: string; hasToken: boolean };
+      tools: Array<{ name: string; write: boolean }>;
+    };
+    expect(create.status, JSON.stringify(created)).toBe(201);
+    expect(created).toMatchObject({
+      kind: "remote",
+      config: {
+        url: `${baseUrl}/mcp/sample`,
+        headerName: "Authorization",
+        hasToken: true,
+      },
+    });
+    expect(created.tools.find((t) => t.name === "echo")?.write).toBe(false);
+    expect(created.tools.find((t) => t.name === "remember")?.write).toBe(true);
+
+    const probe = (await (
+      await fetch(`${baseUrl}/api/admin/resources/probe`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          kind: "remote",
+          slug: "vitest-remote",
+          config: { url: `${baseUrl}/mcp/sample` },
+        }),
+      })
+    ).json()) as { ok: boolean; tools?: Array<{ name: string }> };
+    expect(probe.ok).toBe(true);
+    expect(probe.tools?.map((t) => t.name)).toContain("echo");
+
+    const baseGroup = await db.mcpGroup.findUniqueOrThrow({
+      where: { name: BASE_GROUP },
+    });
+    await fetch(`${baseUrl}/api/admin/mcps/vitest-remote/groups/${baseGroup.id}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    const keyResponse = await fetch(`${baseUrl}/api/keys`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "remote key", mcps: {} }),
+    });
+    const { key } = (await keyResponse.json()) as { key: string };
+
+    // Read by default on a new resource: write tools stay hidden.
+    const reader = new Client({ name: "test", version: "0.0.0" });
+    await reader.connect(
+      new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp/vitest-remote`), {
+        requestInit: { headers: { authorization: `Bearer ${key}` } },
+      }),
+    );
+    const readNames = (await reader.listTools()).tools.map((t) => t.name);
+    expect(readNames).toContain("echo");
+    expect(readNames).not.toContain("remember");
+    const echo = await reader.callTool({ name: "echo", arguments: { message: "relay" } });
+    expect(echo.structuredContent).toMatchObject({ message: "relay", via: "apikey" });
+    await reader.close();
+
+    // Granting write on the relay exposes the remote write tools.
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+    await fetch(`${baseUrl}/api/admin/users/${user.id}/mcps/vitest-remote`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ access: "write" }),
+    });
+    const writer = new Client({ name: "test", version: "0.0.0" });
+    await writer.connect(
+      new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp/vitest-remote`), {
+        requestInit: { headers: { authorization: `Bearer ${key}` } },
+      }),
+    );
+    expect((await writer.listTools()).tools.map((t) => t.name)).toContain("remember");
+    await writer.close();
+    const journal = await db.toolCall.findMany({
+      where: { mcp: { slug: "vitest-remote" }, tool: "echo" },
+    });
+    expect(journal.length).toBeGreaterThan(0);
   });
 });

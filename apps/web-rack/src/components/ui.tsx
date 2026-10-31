@@ -1,6 +1,13 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { type Access, ACCESS_LABELS, KIND_LABELS, type UserKind } from "../api";
+import {
+  type Access,
+  ACCESS_LABELS,
+  KIND_LABELS,
+  KIND_NAMES,
+  type McpKind,
+  type UserKind,
+} from "../api";
 
 /* ------------------------------------------------------------------ icons */
 const paths: Record<string, ReactNode> = {
@@ -119,6 +126,25 @@ const paths: Record<string, ReactNode> = {
       <path d="M4 14h5l1.5 2h3L15 14h5" />
     </>
   ),
+  link: (
+    <>
+      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5" />
+      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5" />
+    </>
+  ),
+  cloud: <path d="M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z" />,
+  edit: (
+    <>
+      <path d="M4 20h4l10.5-10.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z" />
+      <path d="m13 7 4 4" />
+    </>
+  ),
+  box: (
+    <>
+      <path d="M3 8 12 3l9 5-9 5-9-5Z" />
+      <path d="M3 8v8l9 5 9-5V8M12 13v8" />
+    </>
+  ),
 };
 
 export function Icon({
@@ -151,12 +177,31 @@ const MCP_ICONS: Record<string, string> = {
   sample: "flask",
 };
 
-export function McpIcon({ slug, small = false }: { slug: string; small?: boolean }) {
+const KIND_ICONS: Record<McpKind, string> = {
+  package: "plug",
+  site: "globe",
+  remote: "cloud",
+};
+
+export function McpIcon({
+  slug,
+  kind,
+  small = false,
+}: {
+  slug: string;
+  kind?: McpKind;
+  small?: boolean;
+}) {
   return (
     <div className={`mcp-icon ${small ? "sm" : ""}`}>
-      <Icon name={MCP_ICONS[slug] ?? "plug"} />
+      <Icon name={MCP_ICONS[slug] ?? (kind ? KIND_ICONS[kind] : "plug")} />
     </div>
   );
+}
+
+/** Small uppercase tag naming the origin of an MCP (package, site, remote). */
+export function KindTag({ kind }: { kind: McpKind }) {
+  return <span className={`resource-kind ${kind}`}>{KIND_NAMES[kind]}</span>;
 }
 
 /* ---------------------------------------------------------------- badges */

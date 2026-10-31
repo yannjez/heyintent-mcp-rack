@@ -15,6 +15,7 @@
     "test": "turbo run test",
     "validate": "turbo run lint build typecheck test",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "db:generate": "pnpm --filter @rack/database generate",
     "db:migrate": "pnpm --filter @rack/database migrate",
     "db:seed": "pnpm --filter @rack/database seed",

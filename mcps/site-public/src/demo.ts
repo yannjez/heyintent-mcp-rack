@@ -7,7 +7,8 @@ export const DEMO_CONTENT: Content[] = [
     slug: "accueil",
     type: "page",
     title: "Des agents IA qui transforment votre entreprise",
-    summary: "Automatisation intelligente, réduction des coûts, amélioration de la productivité.",
+    summary:
+      "Automatisation intelligente, réduction des coûts, amélioration de la productivité.",
     body: "# Des agents IA qui transforment votre entreprise\n\nPas de magie. Un agent est une application comme les autres : des modèles prédictibles, des APIs stabilisées et vingt-cinq ans de recul sur le développement logiciel.\n\n[Discuter d'un projet](/contact)",
     tags: ["home"],
     status: "published",
@@ -19,7 +20,8 @@ export const DEMO_CONTENT: Content[] = [
     slug: "agents-ia",
     type: "page",
     title: "Construire un agent, c'est assembler des briques",
-    summary: "Langages & API, orchestration, modèles, télémétrie, stockage : les bonnes briques selon le besoin.",
+    summary:
+      "Langages & API, orchestration, modèles, télémétrie, stockage : les bonnes briques selon le besoin.",
     body: "# Construire un agent, c'est assembler des briques\n\nLangChain, LangGraph, RAG, intégrations LLM : simples ou complexes, les briques sont choisies selon votre besoin, pas selon la mode.\n\n## Briques\n\n- Langages & API\n- Orchestration\n- Modèles\n- Télémétrie\n- Stockage",
     tags: ["agents", "stack"],
     status: "published",
@@ -31,7 +33,8 @@ export const DEMO_CONTENT: Content[] = [
     slug: "methode",
     type: "page",
     title: "Comment je travaille",
-    summary: "Cadrage, Build, Régie, Operate : quatre phases pour livrer un agent en production.",
+    summary:
+      "Cadrage, Build, Régie, Operate : quatre phases pour livrer un agent en production.",
     body: "# Comment je travaille\n\n1. **Cadrage** — comprendre le besoin, mesurer la valeur, choisir les briques.\n2. **Build** — développer l'agent, l'intégrer au SI, le tester sur des cas réels.\n3. **Régie** — accompagner vos équipes, itérer sur les retours.\n4. **Operate** — héberger, superviser, maintenir.",
     tags: ["methode"],
     status: "published",

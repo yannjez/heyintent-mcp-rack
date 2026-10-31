@@ -22,7 +22,11 @@ export interface AuthInput {
   isProduction: boolean;
   adminEmails: string[];
   sendOtp: OtpSender;
-  /** Scopes advertised to OAuth clients (mcp:<slug>:read|write). */
+  /**
+   * Scopes advertised to OAuth clients (mcp:<slug>:read|write). The array is
+   * kept by reference: the provider reads it on every request, so the rack
+   * mutates it in place when a resource is added or removed.
+   */
   extraScopes?: string[];
   trustedOrigins?: string[];
   /** Apps hosted elsewhere: tokens are issued for `<url>` (UI) and `<url>/mcp`. */
@@ -111,7 +115,8 @@ export function createAuth(db: Db | object, input: AuthInput) {
   const adminEmails = input.adminEmails;
 
   const resource = mcpResource(input.baseUrl);
-  const scopes = [...BASE_SCOPES, ...(input.extraScopes ?? [])];
+  const scopes = input.extraScopes ?? [];
+  scopes.unshift(...BASE_SCOPES.filter((scope) => !scopes.includes(scope)));
 
   // Keep the client identifier tied to this request across login continuations
   // and token issuance. OAuth validates the signed query/client credentials.

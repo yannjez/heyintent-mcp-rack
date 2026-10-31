@@ -13,8 +13,8 @@ export function ConnectedPage() {
         </div>
         <h1>Connexion établie</h1>
         <p className="muted">
-          <strong>{client}</strong> est maintenant autorisé à utiliser vos ressources avec le
-          niveau d'accès que vous venez de confirmer.
+          <strong>{client}</strong> est maintenant autorisé à utiliser vos ressources avec
+          le niveau d'accès que vous venez de confirmer.
         </p>
         <p className="muted small">
           Vous pouvez fermer cette fenêtre et retourner dans {client}. Les accès accordés

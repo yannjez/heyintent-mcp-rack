@@ -22,13 +22,26 @@ export interface McpRoutesDeps extends McpHandlerDeps {
 }
 
 export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDeps) {
+  // Handlers are built on first use so resources added at runtime are served
+  // without a restart; a changed or removed definition drops its handler.
   const handlers = new Map<string, McpHttpHandler>();
-  for (const definition of deps.registry.definitions) {
+  function handlerFor(slug: string): McpHttpHandler | null {
+    const cached = handlers.get(slug);
+    if (cached) return cached;
+    const definition = deps.registry.definition(slug);
     // External MCPs are served by their own app, which validates rack tokens.
-    if (definition.external) continue;
-    handlers.set(definition.slug, createRackMcpHandler(definition, deps));
+    if (!definition || definition.external) return null;
+    const handler = createRackMcpHandler(definition, deps);
+    handlers.set(slug, handler);
+    return handler;
   }
+  const unsubscribe = deps.registry.onChange((slug) => {
+    const stale = handlers.get(slug);
+    handlers.delete(slug);
+    void stale?.close().catch(() => {});
+  });
   app.addHook("onClose", async () => {
+    unsubscribe();
     await Promise.all([...handlers.values()].map((handler) => handler.close()));
   });
 
@@ -48,7 +61,7 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
       return { status: 403 as const, error: "Application access denied" };
     }
     const registered = await deps.registry.get(slug);
-    const handler = handlers.get(slug);
+    const handler = registered ? handlerFor(slug) : null;
     if (!registered || !handler || !registered.record.enabled) {
       return { status: 404 as const, error: `MCP "${slug}" not found` };
     }

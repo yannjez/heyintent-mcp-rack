@@ -12,9 +12,11 @@ import { existsSync } from "node:fs";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerKeyRoutes } from "./keys/routes.js";
 import {
+  BASE_SCOPES,
   createAuth,
   externalResourceIdentifiers,
   linkClientsToResources,
+  mcpResource,
 } from "./auth/auth.js";
 import { createOtpSender, type OtpSender } from "./auth/email.js";
 import type { Env } from "./env.js";
@@ -46,12 +48,28 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     error: (m, d) => app.log.error(d ?? {}, m),
   };
 
-  const registry = new McpRegistry(
-    db,
-    [...catalog, ...env.externalMcps],
-    options.environment ?? process.env,
-  );
+  const registry = new McpRegistry(db, [...catalog, ...env.externalMcps], {
+    environment: options.environment ?? process.env,
+    secret: env.resourceSecret,
+  });
   await registry.sync();
+
+  // Live scope list: Better Auth reads it on every request, and the protected
+  // resource row keeps its own copy, so both follow resources added at runtime.
+  const scopes = registry.definitions.flatMap((d) => mcpScopes(d.slug));
+  const rackResource = mcpResource(env.baseUrl);
+  registry.onChange(() => {
+    const next = [
+      ...BASE_SCOPES,
+      ...registry.definitions.flatMap((d) => mcpScopes(d.slug)),
+    ];
+    scopes.splice(0, scopes.length, ...next);
+    db.oauthResource
+      .updateMany({ where: { identifier: rackResource }, data: { allowedScopes: next } })
+      .catch((error: unknown) =>
+        log.warn("oauth scopes sync failed", { error: String(error) }),
+      );
+  });
 
   const externalResources = registry.definitions.flatMap((d) =>
     d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
@@ -66,7 +84,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         : [],
     adminEmails: env.adminEmails,
     sendOtp: options.sendOtp ?? createOtpSender(env, (message) => app.log.info(message)),
-    extraScopes: registry.definitions.flatMap((d) => mcpScopes(d.slug)),
+    extraScopes: scopes,
     externalResources,
     // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
     mcpAccesses: async (userId) => {
@@ -85,8 +103,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // Resource rows are seeded when Better Auth initializes; then give clients
   // registered before an external app was declared access to its resources.
   await auth.$context;
-  const linked = await linkClientsToResources(db, externalResourceIdentifiers(externalResources));
-  if (linked > 0) log.info("linked existing OAuth clients to external resources", { linked });
+  const linked = await linkClientsToResources(
+    db,
+    externalResourceIdentifiers(externalResources),
+  );
+  if (linked > 0)
+    log.info("linked existing OAuth clients to external resources", { linked });
 
   await app.register(fastifyCors, {
     origin: [env.baseUrl],
