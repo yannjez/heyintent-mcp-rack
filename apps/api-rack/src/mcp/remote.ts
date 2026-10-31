@@ -1,6 +1,11 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { fromJsonSchema } from "@modelcontextprotocol/server";
-import { defineMcp, type McpDefinition, type McpToolInfo } from "@rack/mcp-kit";
+import {
+  defineMcp,
+  type McpContext,
+  type McpDefinition,
+  type McpToolInfo,
+} from "@rack/mcp-kit";
 
 export interface RemoteMcpOptions {
   slug: string;
@@ -26,6 +31,39 @@ export interface RemoteConnectOptions {
 export const REMOTE_CONNECT_TIMEOUT_MS = 15_000;
 
 type JsonSchema = Parameters<typeof fromJsonSchema>[0];
+
+/** Printable ASCII without CR/LF: safe as an HTTP header value. */
+function isHeaderValue(value: string): boolean {
+  return value.length > 0 && /^[ -~]+$/.test(value);
+}
+
+/**
+ * Identity headers the rack adds to an upstream session so the remote server
+ * can journal the end user and apply its own access rules. They are only
+ * meaningful alongside the rack's static credential for that server: without
+ * one (`staticHeaders` empty), nothing is added, so a remote server must only
+ * trust `X-Rack-*` when the credential it knows accompanies them. Values that
+ * would not survive as HTTP header values are dropped rather than failing the
+ * session.
+ */
+export function rackIdentityHeaders(
+  ctx: Pick<McpContext, "identity" | "access" | "mcp">,
+  staticHeaders: Record<string, string>,
+): Record<string, string> {
+  if (Object.keys(staticHeaders).length === 0) return {};
+  const candidates: Record<string, string | undefined> = {
+    "x-rack-user": ctx.identity.userId,
+    "x-rack-user-email": ctx.identity.email,
+    "x-rack-access": ctx.access,
+    "x-rack-slug": ctx.mcp.slug,
+    "x-rack-via": ctx.identity.via,
+  };
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(candidates)) {
+    if (typeof value === "string" && isHeaderValue(value)) headers[name] = value;
+  }
+  return headers;
+}
 
 export interface RemoteSession {
   client: Client;
@@ -120,9 +158,12 @@ export async function probeRemote(
  * see the remote credential.
  *
  * `register` opens one upstream session per rack-side session, bounded by
- * `connectTimeoutMs`, and closes it with it. Catalog discovery must not go
- * through `register` (the recording server used by `describeTools` never
- * closes): use `probeRemote` instead.
+ * `connectTimeoutMs`, and closes it with it; that session also carries the
+ * end user's identity and access level in `X-Rack-*` headers (see
+ * `rackIdentityHeaders`). Catalog discovery must not go through `register`
+ * (the recording server used by `describeTools` never closes): use
+ * `probeRemote` instead, which sends only the static headers so the remote
+ * server lists its whole catalog.
  */
 export function createRemoteMcp(options: RemoteMcpOptions): McpDefinition {
   const timeoutMs = options.connectTimeoutMs ?? REMOTE_CONNECT_TIMEOUT_MS;
@@ -133,7 +174,11 @@ export function createRemoteMcp(options: RemoteMcpOptions): McpDefinition {
     description: options.description,
     capabilities: [],
     async register(server, ctx) {
-      const session = await openRemote(options.url, options.headers, timeoutMs);
+      const headers = {
+        ...options.headers,
+        ...rackIdentityHeaders(ctx, options.headers),
+      };
+      const session = await openRemote(options.url, headers, timeoutMs);
       // Tear the upstream session down with the rack-side session.
       const previous = server.server.onclose;
       server.server.onclose = () => {
@@ -166,7 +211,7 @@ export function createRemoteMcp(options: RemoteMcpOptions): McpDefinition {
             ...(tool.annotations ? { annotations: tool.annotations } : {}),
           },
           async (args) => {
-            ctx.log.info("remote tool call", { tool: tool.name });
+            ctx.log.info("remote tool call", { tool: tool.name, access: ctx.access });
             const result = await session.client.callTool({
               name: tool.name,
               arguments: (args ?? {}) as Record<string, unknown>,

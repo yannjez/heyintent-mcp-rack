@@ -107,7 +107,7 @@ export function ConnectionFields({
         <span className="hint">
           {isSite
             ? "URL de base de l'API : le rack appelle <base>/content avec le jeton ci-dessous."
-            : "Transport HTTP streamable. Le rack s'y connecte avec la clé ci-dessous, jamais avec celle de l'utilisateur."}
+            : "Transport HTTP streamable. Le rack s'y connecte avec la clé ci-dessous, jamais avec celle de l'utilisateur, et transmet l'identité et le niveau d'accès de l'utilisateur dans des en-têtes X-Rack-*."}
         </span>
       </label>
       {!isSite && (
