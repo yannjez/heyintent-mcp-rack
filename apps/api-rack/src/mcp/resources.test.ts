@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { describe, expect, it } from "vitest";
 import { probeRemote } from "./remote.js";
 import {
@@ -81,6 +82,11 @@ describe("resource configuration", () => {
     const server = createServer(() => {
       /* keep the request pending forever */
     });
+    const sockets = new Set<Socket>();
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
@@ -90,6 +96,9 @@ describe("resource configuration", () => {
         probeRemote(`http://127.0.0.1:${port}/mcp`, {}, { timeoutMs: 300 }),
       ).rejects.toThrow(/timed out/);
       expect(Date.now() - started).toBeLessThan(5_000);
+      // The pending initialize request is aborted, not left dangling upstream.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(sockets.size).toBe(0);
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

@@ -722,6 +722,16 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
       name: "Site renommé",
       config: { apiUrl: "http://127.0.0.1:9/v2", hasToken: true },
     });
+    // An invalid patch is rejected as a whole: `enabled` is not persisted either.
+    const rejected = await fetch(`${baseUrl}/api/admin/mcps/vitest-site`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ enabled: false, config: { apiUrl: "invalid" } }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(
+      (await db.mcp.findUniqueOrThrow({ where: { slug: "vitest-site" } })).enabled,
+    ).toBe(true);
     const locked = await fetch(`${baseUrl}/api/admin/mcps/sample`, {
       method: "PATCH",
       headers,

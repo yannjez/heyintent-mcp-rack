@@ -476,25 +476,22 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
       const { enabled, name, description, config } = parsed.data;
       const kind = deps.registry.kind(slug) ?? "package";
-      if (
-        kind === "package" &&
-        (name !== undefined || description !== undefined || config)
-      ) {
+      const editsResource = name !== undefined || description !== undefined || !!config;
+      if (kind === "package" && editsResource) {
         return jsonError(reply, 400, "Packages shipped with the rack cannot be edited");
+      }
+      // Validate the whole patch before touching anything: a rejected request
+      // must leave the resource exactly as it was, `enabled` included.
+      let resource: ResourceConfig | undefined;
+      if (config && kind !== "package") {
+        const parsedConfig = parseResourceConfig(kind, config);
+        if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
+        resource = parsedConfig.value;
       }
       if (enabled !== undefined) {
         await deps.db.mcp.update({ where: { slug }, data: { enabled } });
       }
-      if (
-        kind !== "package" &&
-        (name !== undefined || description !== undefined || config)
-      ) {
-        let resource: ResourceConfig | undefined;
-        if (config) {
-          const parsedConfig = parseResourceConfig(kind, config);
-          if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
-          resource = parsedConfig.value;
-        }
+      if (kind !== "package" && editsResource) {
         try {
           await deps.registry.updateResource(slug, {
             ...(name !== undefined ? { name } : {}),
