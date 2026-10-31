@@ -79,15 +79,48 @@ export interface SettingSpec {
   example?: string;
 }
 
+/**
+ * "package": shipped with the rack or declared in EXTERNAL_MCPS.
+ * "site" / "remote": resources added by an admin from the catalogue.
+ */
+export type McpKind = "package" | "site" | "remote";
+export type ResourceKind = Exclude<McpKind, "package">;
+export const RESOURCE_KINDS: ResourceKind[] = ["site", "remote"];
+export const KIND_NAMES: Record<McpKind, string> = {
+  package: "Package du rack",
+  site: "Site",
+  remote: "MCP distant",
+};
+
+export interface SiteConfigView {
+  apiUrl: string;
+  hasToken: boolean;
+}
+
+export interface RemoteConfigView {
+  url: string;
+  headerName: "Authorization" | "x-api-key";
+  hasToken: boolean;
+}
+
+export interface ResourceProbe {
+  ok: boolean;
+  message: string;
+  tools?: ToolInfo[];
+}
+
 export interface UserMcp {
   slug: string;
   name: string;
   description: string;
   category: string | null;
   version: string;
+  kind: McpKind;
   access: Access;
   tools: ToolInfo[];
   url: string;
+  /** UI of an external application, null for MCPs served by the rack. */
+  appUrl: string | null;
 }
 
 export interface AdminMcp {
@@ -97,6 +130,12 @@ export interface AdminMcp {
   description: string;
   category: string | null;
   version: string;
+  kind: McpKind;
+  /** Connection parameters of a resource, secrets masked; null for packages. */
+  config: SiteConfigView | RemoteConfigView | null;
+  loadError: string | null;
+  /** Origin of an MCP hosted outside the rack (EXTERNAL_MCPS), null otherwise. */
+  externalUrl: string | null;
   enabled: boolean;
   loaded: boolean;
   tools: ToolInfo[];

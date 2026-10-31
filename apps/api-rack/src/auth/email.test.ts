@@ -21,7 +21,9 @@ describe("OTP delivery", () => {
 
     await send("yann@heyintent.com", "123456");
 
-    expect(log).toHaveBeenCalledWith("[Ressource Rack] OTP for yann@heyintent.com: 123456");
+    expect(log).toHaveBeenCalledWith(
+      "[Ressource Rack] OTP for yann@heyintent.com: 123456",
+    );
     expect(nodemailer.createTransport).not.toHaveBeenCalled();
   });
 

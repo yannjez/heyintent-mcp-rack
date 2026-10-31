@@ -1,13 +1,23 @@
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   type AdminGroup,
   type AdminMcp,
   api,
   formatRelative,
+  type RemoteConfigView,
   type SettingSpec,
+  type SiteConfigView,
 } from "../../api";
-import { CopyButton, Icon, McpIcon, PageHead, Switch } from "../../components/ui";
+import { ResourceDrawer } from "../../components/ResourceForm";
+import {
+  CopyButton,
+  Icon,
+  KindTag,
+  McpIcon,
+  PageHead,
+  Switch,
+} from "../../components/ui";
 
 function SettingRow({ spec, configured }: { spec: SettingSpec; configured: boolean }) {
   return (
@@ -34,10 +44,12 @@ function SettingRow({ spec, configured }: { spec: SettingSpec; configured: boole
 
 export function AdminMcpsPage() {
   const { slug } = useParams();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [mcps, setMcps] = useState<AdminMcp[]>([]);
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const reload = useCallback(() => {
     api<AdminMcp[]>("/api/admin/mcps")
@@ -78,42 +90,59 @@ export function AdminMcpsPage() {
     }
   }
 
+  const current = mcps.find((mcp) => mcp.slug === slug) ?? null;
+
   return (
     <>
       <Link className="btn ghost detail-back" to="/admin/catalogue">
-        Retour au catalogue
+        <Icon name="arrow-left" /> Retour au catalogue
       </Link>
       <PageHead
         eyebrow="Administration"
-        title={mcps.find((mcp) => mcp.slug === slug)?.name ?? "Ressource"}
+        title={current?.name ?? "Ressource"}
         lead="Gérez les groupes autorisés, la connexion et les outils de cette ressource."
+        actions={
+          current && current.kind !== "package" ? (
+            <button className="btn ghost" onClick={() => setEditing(true)}>
+              <Icon name="edit" /> Modifier la ressource
+            </button>
+          ) : undefined
+        }
       />
       {loading && <p className="muted">Chargement…</p>}
-      {!loading && !error && !mcps.some((mcp) => mcp.slug === slug) && (
-        <p className="muted">Ressource introuvable.</p>
-      )}
+      {!loading && !error && !current && <p className="muted">Ressource introuvable.</p>}
       {error && <div className="alert error">{error}</div>}
       <div className="stack" style={{ gap: 20 }}>
-        {mcps
-          .filter((mcp) => mcp.slug === slug)
-          .map((mcp) => {
+        {current &&
+          [current].map((mcp) => {
             const reads = mcp.tools.filter((t) => !t.write);
             const writes = mcp.tools.filter((t) => t.write);
             const demo =
               mcp.settingsSpec.length > 0 && mcp.configuredSettings.length === 0;
+            const isResource = mcp.kind !== "package";
+            const siteConfig =
+              mcp.kind === "site" ? (mcp.config as SiteConfigView) : null;
+            const remoteConfig =
+              mcp.kind === "remote" ? (mcp.config as RemoteConfigView) : null;
             return (
-              <article className="card" key={mcp.slug}>
+              <article className="card resource-card" key={mcp.slug}>
                 <div className="card-head">
-                  <McpIcon slug={mcp.slug} />
+                  <McpIcon slug={mcp.slug} kind={mcp.kind} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="row" style={{ gap: 8 }}>
                       <h2>{mcp.name}</h2>
+                      <KindTag kind={mcp.kind} />
                       <span className="tiny muted mono">
                         {mcp.slug} · v{mcp.version}
                       </span>
-                      {!mcp.loaded && <span className="badge bad">package absent</span>}
+                      {!mcp.loaded && <span className="badge bad">non chargé</span>}
                       {demo && mcp.loaded && (
                         <span className="badge warn">mode démo</span>
+                      )}
+                      {mcp.loadError && mcp.loaded && (
+                        <span className="badge warn" title={mcp.loadError}>
+                          injoignable au démarrage
+                        </span>
                       )}
                     </div>
                     <div className="small muted">{mcp.description}</div>
@@ -131,6 +160,11 @@ export function AdminMcpsPage() {
                   </div>
                 </div>
                 <div className="card-body">
+                  {mcp.loadError && !mcp.loaded && (
+                    <div className="alert error" style={{ marginBottom: 20 }}>
+                      {mcp.loadError}
+                    </div>
+                  )}
                   <section className="stack tight" style={{ marginBottom: 24 }}>
                     <h3>Groupes autorisés</h3>
                     <p className="small muted">
@@ -142,30 +176,79 @@ export function AdminMcpsPage() {
                         Créez un groupe depuis la page Groupes.
                       </div>
                     )}
-                    {groups.map((group) => (
-                      <div className="access-row" key={group.id}>
-                        <div className="names">
-                          <strong>{group.name}</strong>
-                          <span>{group.description}</span>
-                        </div>
-                        <Switch
-                          on={mcp.groups.some((g) => g.id === group.id)}
-                          label={`Autoriser ${group.name}`}
-                          onChange={(enabled) =>
-                            void setGroup(mcp.slug, group.id, enabled)
-                          }
-                        />
+                    {groups.length > 0 && (
+                      <div className="access-matrix">
+                        {groups.map((group) => (
+                          <div className="access-row" key={group.id}>
+                            <div className="names">
+                              <strong>{group.name}</strong>
+                              <span>{group.description || "—"}</span>
+                            </div>
+                            <Switch
+                              on={mcp.groups.some((g) => g.id === group.id)}
+                              label={`Autoriser ${group.name}`}
+                              onChange={(enabled) =>
+                                void setGroup(mcp.slug, group.id, enabled)
+                              }
+                            />
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </section>
                   <div className="grid two">
                     <section className="stack tight">
                       <h3>Connexion au système cible</h3>
-                      {mcp.settingsSpec.length === 0 ? (
-                        <div className="small muted">
-                          Aucune variable d'environnement requise.
-                        </div>
-                      ) : (
+                      {siteConfig && (
+                        <dl className="kv">
+                          <dt>API de contenu</dt>
+                          <dd>
+                            <code className="ellipsis">{siteConfig.apiUrl}</code>
+                          </dd>
+                          <dt>Jeton</dt>
+                          <dd>
+                            {siteConfig.hasToken ? (
+                              <span className="badge ok">enregistré</span>
+                            ) : (
+                              <span className="badge warn">aucun</span>
+                            )}
+                          </dd>
+                        </dl>
+                      )}
+                      {remoteConfig && (
+                        <dl className="kv">
+                          <dt>Serveur MCP</dt>
+                          <dd>
+                            <code className="ellipsis">{remoteConfig.url}</code>
+                          </dd>
+                          <dt>Credential</dt>
+                          <dd>
+                            {remoteConfig.hasToken ? (
+                              <span className="badge ok">
+                                {remoteConfig.headerName} · enregistré
+                              </span>
+                            ) : (
+                              <span className="badge warn">aucun</span>
+                            )}
+                          </dd>
+                        </dl>
+                      )}
+                      {!isResource && mcp.externalUrl && (
+                        <dl className="kv">
+                          <dt>Application</dt>
+                          <dd>
+                            <code className="ellipsis">{mcp.externalUrl}</code>
+                          </dd>
+                        </dl>
+                      )}
+                      {!isResource &&
+                        !mcp.externalUrl &&
+                        mcp.settingsSpec.length === 0 && (
+                          <div className="small muted">
+                            Aucune variable d'environnement requise.
+                          </div>
+                        )}
+                      {!isResource && mcp.settingsSpec.length > 0 && (
                         <div className="small muted">
                           Variables lues au démarrage du rack. Modifier une valeur demande
                           un redémarrage.
@@ -184,10 +267,19 @@ export function AdminMcpsPage() {
                     <section className="stack tight">
                       <h3>
                         Outils{" "}
-                        <span className="tiny muted" style={{ fontWeight: 500 }}>
+                        <span className="tiny muted" style={{ fontWeight: 400 }}>
                           {reads.length} lecture · {writes.length} écriture
                         </span>
                       </h3>
+                      {mcp.tools.length === 0 && (
+                        <div className="small muted">
+                          {mcp.kind === "remote"
+                            ? "Aucun outil connu : le serveur distant n'a pas répondu au dernier chargement."
+                            : mcp.externalUrl
+                              ? "Les outils sont servis par l'application elle-même."
+                              : "Aucun outil."}
+                        </div>
+                      )}
                       <ul className="tool-list" style={{ padding: 0 }}>
                         {mcp.tools.map((tool) => (
                           <li key={tool.name}>
@@ -216,6 +308,17 @@ export function AdminMcpsPage() {
             );
           })}
       </div>
+      {editing && current && current.kind !== "package" && (
+        <ResourceDrawer
+          mcp={current}
+          onClose={() => setEditing(false)}
+          onChanged={reload}
+          onDeleted={() => {
+            setEditing(false);
+            navigate("/admin/catalogue");
+          }}
+        />
+      )}
     </>
   );
 }

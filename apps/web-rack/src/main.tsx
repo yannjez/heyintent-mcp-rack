@@ -23,6 +23,9 @@ import { ConsentPage } from "./pages/Consent";
 import { KeysPage } from "./pages/Keys";
 import { LoginPage } from "./pages/Login";
 import { McpsPage } from "./pages/Mcps";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/space-grotesk";
 import "./styles.css";
 
 /** Loads the session and gates the portal; redirects to /login when signed out. */

@@ -4,3 +4,5 @@ dist
 pnpm-lock.yaml
 packages/database/src/generated
 packages/database/prisma/migrations
+# Managed block rewritten by turbo itself.
+AGENTS.md

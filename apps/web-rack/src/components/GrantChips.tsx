@@ -8,7 +8,9 @@ export function GrantChips({
   names?: Record<string, string>;
 }) {
   if (grants.mcps === "*") {
-    return <span className="badge off plain">Toutes mes ressources (niveau affecté)</span>;
+    return (
+      <span className="badge off plain">Toutes mes ressources (niveau affecté)</span>
+    );
   }
   return (
     <div className="chips">

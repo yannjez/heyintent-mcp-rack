@@ -46,7 +46,7 @@ function ConnectModal({ mcp, onClose }: { mcp: UserMcp; onClose: () => void }) {
     <Modal
       title={
         <span className="row">
-          <McpIcon slug={mcp.slug} small /> Connecter {mcp.name}
+          <McpIcon slug={mcp.slug} kind={mcp.kind} small /> Connecter {mcp.name}
         </span>
       }
       onClose={onClose}
@@ -220,7 +220,7 @@ export function McpsPage({ me, showWelcome = true }: { me: Me; showWelcome?: boo
             <article className="card mcp-card" key={mcp.slug}>
               <div className="card-body">
                 <div className="mcp-title">
-                  <McpIcon slug={mcp.slug} />
+                  <McpIcon slug={mcp.slug} kind={mcp.kind} />
                   <div className="names">
                     <div className="category">
                       {mcp.category ?? "MCP"} · v{mcp.version}

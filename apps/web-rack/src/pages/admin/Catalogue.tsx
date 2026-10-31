@@ -1,18 +1,22 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router";
-import { api, type AdminApplication, type AdminMcp } from "../../api";
-import { Empty, Icon, McpIcon, PageHead } from "../../components/ui";
+import { useCallback, useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { api, type AdminApplication, type AdminMcp, KIND_NAMES } from "../../api";
+import { NewResourceModal } from "../../components/ResourceForm";
+import { Empty, Icon, KindTag, McpIcon, PageHead } from "../../components/ui";
 
 type Filter = "all" | "application" | "resource";
 
 export function AdminCataloguePage() {
+  const navigate = useNavigate();
   const [applications, setApplications] = useState<AdminApplication[]>([]);
   const [resources, setResources] = useState<AdminMcp[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  useEffect(() => {
+  const [creating, setCreating] = useState(false);
+
+  const reload = useCallback(() => {
     Promise.all([
       api<AdminApplication[]>("/api/admin/applications"),
       api<AdminMcp[]>("/api/admin/mcps"),
@@ -24,11 +28,14 @@ export function AdminCataloguePage() {
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+  useEffect(reload, [reload]);
+
   const needle = search.trim().toLowerCase();
   const entries = [
     ...applications.map((application) => ({
       id: application.clientId,
       type: "application" as const,
+      kind: null,
       name: application.name || application.clientId,
       description: application.uri || "Application connectée à Rack",
       enabled: !application.disabled,
@@ -40,6 +47,7 @@ export function AdminCataloguePage() {
     ...resources.map((resource) => ({
       id: resource.slug,
       type: "resource" as const,
+      kind: resource.kind,
       name: resource.name,
       description: resource.description,
       enabled: resource.enabled && resource.loaded,
@@ -59,7 +67,12 @@ export function AdminCataloguePage() {
       <PageHead
         eyebrow="Administration"
         title="Applications et ressources"
-        lead="Un catalogue pour gérer les connexions, les ressources et leurs accès."
+        lead="Un catalogue pour gérer les connexions, les ressources et leurs accès. Les sites et MCP distants s'ajoutent ici, sans redéploiement."
+        actions={
+          <button className="btn accent" onClick={() => setCreating(true)}>
+            <Icon name="plus" /> Ajouter une ressource
+          </button>
+        }
       />
       <div className="catalogue-toolbar">
         <div className="segmented" aria-label="Type d’entrée">
@@ -106,7 +119,7 @@ export function AdminCataloguePage() {
               <div className="card-body stack">
                 <div className="row spread">
                   {entry.type === "resource" ? (
-                    <McpIcon slug={entry.id} />
+                    <McpIcon slug={entry.id} kind={entry.kind ?? undefined} />
                   ) : (
                     <div className="mcp-icon">
                       <Icon name="grid" />
@@ -118,7 +131,14 @@ export function AdminCataloguePage() {
                 </div>
                 <div>
                   <span className="category">
-                    {entry.type === "application" ? "Application" : "Ressource MCP"}
+                    {entry.type === "application"
+                      ? "Application"
+                      : entry.kind && entry.kind !== "package"
+                        ? KIND_NAMES[entry.kind]
+                        : "Ressource MCP"}
+                    {entry.kind && entry.kind !== "package" && (
+                      <KindTag kind={entry.kind} />
+                    )}
                   </span>
                   <h2>
                     <Link to={entry.path}>{entry.name}</Link>
@@ -135,6 +155,15 @@ export function AdminCataloguePage() {
             </article>
           ))}
         </div>
+      )}
+      {creating && (
+        <NewResourceModal
+          onClose={() => setCreating(false)}
+          onCreated={(created) => {
+            reload();
+            navigate(`/admin/catalogue/ressources/${encodeURIComponent(created.slug)}`);
+          }}
+        />
       )}
     </>
   );

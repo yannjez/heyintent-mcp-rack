@@ -20,6 +20,7 @@
     "@better-auth/oauth-provider": "1.7.7",
     "@fastify/cors": "11.3.0",
     "@fastify/static": "10.1.5",
+    "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@rack/database": "workspace:*",
     "@rack/mcp-kit": "workspace:*",
@@ -33,7 +34,6 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "26.6.4",
     "@types/nodemailer": "8.0.2",
     "auth": "1.7.7",

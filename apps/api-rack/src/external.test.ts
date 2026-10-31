@@ -71,7 +71,9 @@ describe("external resource links", () => {
   it("links existing clients to seeded resources they miss", async () => {
     const createMany = vi.fn();
     const db = {
-      oauthClient: { findMany: async () => [{ clientId: "claude" }, { clientId: "ao-ui" }] },
+      oauthClient: {
+        findMany: async () => [{ clientId: "claude" }, { clientId: "ao-ui" }],
+      },
       oauthResource: { findMany: async () => [{ identifier: ui }, { identifier: mcp }] },
       oauthClientResource: {
         findMany: async () => [{ clientId: "claude", resourceId: mcp }],
@@ -81,7 +83,8 @@ describe("external resource links", () => {
 
     expect(await linkClientsToResources(db, [ui, mcp])).toBe(3);
     const links = createMany.mock.calls[0]![0].data.map(
-      (link: { clientId: string; resourceId: string }) => `${link.clientId} ${link.resourceId}`,
+      (link: { clientId: string; resourceId: string }) =>
+        `${link.clientId} ${link.resourceId}`,
     );
     expect(links).toEqual([`claude ${ui}`, `ao-ui ${ui}`, `ao-ui ${mcp}`]);
   });
