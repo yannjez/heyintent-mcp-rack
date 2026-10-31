@@ -27,8 +27,9 @@ avec des accès nominatifs, en lecture ou en écriture.
   le serveur distant doit ignorer ces en-têtes si elle ne correspond pas). Les
   secrets sont chiffrés en base (AES-256-GCM, clé dérivée de `ENCRYPTION_KEY` ou à défaut
   `BETTER_AUTH_SECRET`), un bouton « Tester la connexion » vérifie les paramètres avant
-  enregistrement, et les scopes OAuth `mcp:<slug>:read|write` sont publiés immédiatement (un
-  client OAuth enregistré avant l'ajout doit se réenregistrer pour les demander).
+  enregistrement, et les scopes OAuth `mcp:<slug>:read|write` sont publiés et acceptés
+  immédiatement, y compris pour les clients OAuth enregistrés avant l'ajout (le serveur
+  d'autorisation est reconstruit à chaque changement du catalogue).
 - **MCP** : un MCP est un package `mcps/<slug>` exposé sur `/mcp/<slug>`, enregistré en base au
   démarrage, administré (activation, paramètres de connexion chiffrés) et journalisé (page Logs).
   - `site-public` — contenu du site public heyintent.com (pages, actualités, événements) :

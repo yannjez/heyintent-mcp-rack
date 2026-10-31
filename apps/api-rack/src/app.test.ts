@@ -19,6 +19,8 @@ const PUBLIC_EMAILS = [
 const GROUP_NAME = "vitest-group";
 const BASE_GROUP = "vitest-base-group";
 const RESOURCE_SLUGS = ["vitest-site", "vitest-remote", "vitest-partner"];
+const EARLY_CLIENT = "Vitest early client";
+const EARLY_REDIRECT = "http://127.0.0.1:9/callback";
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -80,6 +82,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
+    await db.oauthClient.deleteMany({ where: { name: EARLY_CLIENT } });
     await db.$disconnect();
   });
 
@@ -616,6 +619,22 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
 
   it("lets the admin add a public site resource, served without a restart", async () => {
     const headers = { "content-type": "application/json", cookie };
+    // An OAuth client registered before the resource exists, as MCP clients are.
+    const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: EARLY_CLIENT,
+        application_type: "native",
+        redirect_uris: [EARLY_REDIRECT],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+      }),
+    });
+    const earlyClient = (await registration.json()) as { client_id: string };
+    expect(registration.status, JSON.stringify(earlyClient)).toBe(201);
+
     const refused = await fetch(`${baseUrl}/api/admin/resources`, {
       method: "POST",
       headers,
@@ -663,11 +682,36 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     expect(dup.status).toBe(409);
 
-    // OAuth clients may now ask for its scopes.
+    // OAuth clients may now ask for its scopes: the resource and the
+    // authorization server advertise them, and a client registered earlier
+    // is not turned away with invalid_scope.
     const pr = (await (
       await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`)
     ).json()) as { scopes_supported?: string[] };
     expect(pr.scopes_supported).toContain("mcp:vitest-site:write");
+    const as = (await (
+      await fetch(`${baseUrl}/.well-known/oauth-authorization-server`)
+    ).json()) as { scopes_supported?: string[] };
+    expect(as.scopes_supported).toContain("mcp:vitest-site:read");
+    const authorizeQuery = new URLSearchParams({
+      response_type: "code",
+      client_id: earlyClient.client_id,
+      redirect_uri: EARLY_REDIRECT,
+      scope: "openid mcp:vitest-site:read",
+      state: "xyz",
+      code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+      code_challenge_method: "S256",
+    });
+    const authorize = await fetch(
+      `${baseUrl}/api/auth/oauth2/authorize?${authorizeQuery}`,
+      { redirect: "manual" },
+    );
+    const target =
+      authorize.status === 302
+        ? authorize.headers.get("location")!
+        : ((await authorize.json()) as { url: string }).url;
+    expect(target).not.toContain("invalid_scope");
+    expect(new URL(target, baseUrl).pathname).toBe("/login");
 
     // Availability still goes through groups; the site then answers over MCP.
     const baseGroup = await db.mcpGroup.findUniqueOrThrow({

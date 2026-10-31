@@ -16,6 +16,7 @@ import {
   createAuth,
   externalResourceIdentifiers,
   linkClientsToResources,
+  liveAuth,
   mcpResource,
 } from "./auth/auth.js";
 import { createOtpSender, type OtpSender } from "./auth/email.js";
@@ -54,50 +55,73 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
   await registry.sync();
 
-  // Live scope list: Better Auth reads it on every request, and the protected
-  // resource row keeps its own copy, so both follow resources added at runtime.
-  const scopes = registry.definitions.flatMap((d) => mcpScopes(d.slug));
   const rackResource = mcpResource(env.baseUrl);
-  registry.onChange(() => {
-    const next = [
-      ...BASE_SCOPES,
-      ...registry.definitions.flatMap((d) => mcpScopes(d.slug)),
-    ];
-    scopes.splice(0, scopes.length, ...next);
-    db.oauthResource
-      .updateMany({ where: { identifier: rackResource }, data: { allowedScopes: next } })
-      .catch((error: unknown) =>
-        log.warn("oauth scopes sync failed", { error: String(error) }),
-      );
-  });
-
+  const currentScopes = () => [
+    ...BASE_SCOPES,
+    ...registry.definitions.flatMap((d) => mcpScopes(d.slug)),
+  ];
   const externalResources = registry.definitions.flatMap((d) =>
     d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
   );
-  const auth = createAuth(db, {
-    baseUrl: env.baseUrl,
-    secret: env.secret,
-    isProduction: env.isProduction,
-    trustedOrigins:
-      env.nodeEnv === "development"
-        ? ["http://localhost:5173", "http://127.0.0.1:5173"]
-        : [],
-    adminEmails: env.adminEmails,
-    sendOtp: options.sendOtp ?? createOtpSender(env, (message) => app.log.info(message)),
-    extraScopes: scopes,
-    externalResources,
-    // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
-    mcpAccesses: async (userId) => {
-      const [accesses, enabled] = await Promise.all([
-        registry.userAccesses(userId),
-        db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
-      ]);
-      const slugs = new Set(enabled.map((mcp) => mcp.slug));
-      for (const slug of Object.keys(accesses)) {
-        if (!slugs.has(slug)) delete accesses[slug];
+  const buildAuth = (scopes: readonly string[]) =>
+    createAuth(db, {
+      baseUrl: env.baseUrl,
+      secret: env.secret,
+      isProduction: env.isProduction,
+      trustedOrigins:
+        env.nodeEnv === "development"
+          ? ["http://localhost:5173", "http://127.0.0.1:5173"]
+          : [],
+      adminEmails: env.adminEmails,
+      sendOtp:
+        options.sendOtp ?? createOtpSender(env, (message) => app.log.info(message)),
+      externalResources,
+      // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
+      mcpAccesses: async (userId) => {
+        const [accesses, enabled] = await Promise.all([
+          registry.userAccesses(userId),
+          db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
+        ]);
+        const slugs = new Set(enabled.map((mcp) => mcp.slug));
+        for (const slug of Object.keys(accesses)) {
+          if (!slugs.has(slug)) delete accesses[slug];
+        }
+        return accesses;
+      },
+      extraScopes: [...scopes],
+    });
+
+  // Better Auth copies its scope list when it is built, so the OAuth server
+  // is rebuilt whenever the registry changes: the scopes of a resource added
+  // at runtime are advertised and accepted without a restart. The protected
+  // resource row and the clients that were handed the rack's full scope list
+  // at registration follow; clients that chose a subset keep it.
+  let scopes = currentScopes();
+  let current = buildAuth(scopes);
+  const auth = liveAuth(() => current);
+  let syncing = Promise.resolve();
+  registry.onChange(() => {
+    syncing = syncing.then(async () => {
+      const previous = scopes;
+      const next = currentScopes();
+      try {
+        const rebuilt = buildAuth(next);
+        await rebuilt.$context;
+        current = rebuilt;
+        scopes = next;
+        await db.oauthResource.updateMany({
+          where: { identifier: rackResource },
+          data: { allowedScopes: next },
+        });
+        await db.oauthClient.updateMany({
+          where: { scopes: { hasEvery: previous } },
+          data: { scopes: next },
+        });
+      } catch (error) {
+        log.warn("oauth scopes sync failed", { error: String(error) });
       }
-      return accesses;
-    },
+    });
+    return syncing;
   });
 
   // Resource rows are seeded when Better Auth initializes; then give clients
