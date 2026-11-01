@@ -119,10 +119,10 @@ function ApplicationEditor({
           </select>
         </label>
         <p className="small muted">
-          Une application désactivée est bloquée pour tous, y compris les
-          administrateurs. Ce réglage dit seulement qui peut se connecter par ce canal :
-          les droits sur les ressources (lecture, écriture) restent définis sur les
-          utilisateurs et les groupes.
+          Une application désactivée est bloquée pour tous, y compris les administrateurs.
+          Ce réglage dit seulement qui peut se connecter par ce canal : les droits sur les
+          ressources (lecture, écriture) restent définis sur les utilisateurs et les
+          groupes.
         </p>
         <h3>Groupes autorisés</h3>
         {groups.length === 0 && <p className="small muted">Aucun groupe créé.</p>}

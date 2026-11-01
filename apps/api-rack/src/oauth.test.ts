@@ -568,9 +568,9 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
       expect((await patch({ groupIds: ["unknown"] })).status).toBe(404);
       // Individual exceptions are gone: the former field is rejected outright.
-      expect(
-        (await patch({ users: [{ userId: user.id, allowed: true }] })).status,
-      ).toBe(400);
+      expect((await patch({ users: [{ userId: user.id, allowed: true }] })).status).toBe(
+        400,
+      );
       expect(
         (await patch({ disabled: true, accessRestricted: true, groupIds: [] })).status,
       ).toBe(200);
