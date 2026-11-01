@@ -21,29 +21,40 @@ function useAccessUpdate(onChanged: () => void) {
   return { busy, error, update };
 }
 
+/**
+ * Effective connection rights of one account, per application. Read-only: the
+ * policy lives on the application (open, group-gated or disabled) — individual
+ * exceptions no longer exist.
+ */
 export function UserApplicationsAccess({
   applications,
   user,
-  onChanged,
 }: {
   applications: AdminApplication[];
   user: AdminUser;
-  onChanged: () => void;
 }) {
-  const { busy, error, update } = useAccessUpdate(onChanged);
   return (
     <div className="stack tight">
-      {error && <div className="alert error">{error}</div>}
       {applications.length === 0 && (
         <p className="muted small">Aucune application enregistrée.</p>
       )}
       {applications.map((application) => {
-        const override = application.users.find((u) => u.userId === user.id);
-        const inherited =
-          !application.accessRestricted ||
-          user.groups.some((g) => application.groupIds.includes(g.id));
+        const viaGroups = user.groups.filter((group) =>
+          application.groupIds.includes(group.id),
+        );
         const allowed =
-          !application.disabled && !user.banned && (override?.allowed ?? inherited);
+          !application.disabled &&
+          !user.banned &&
+          (!application.accessRestricted || viaGroups.length > 0);
+        const reason = application.disabled
+          ? "Application désactivée pour tout le monde"
+          : user.banned
+            ? "Compte désactivé"
+            : !application.accessRestricted
+              ? "Ouverte à tous les utilisateurs"
+              : viaGroups.length > 0
+                ? `Via ${viaGroups.map((group) => group.name).join(", ")}`
+                : "Réservée à des groupes — aucun groupe de ce compte n'est autorisé";
         return (
           <div className="access-row" key={application.clientId}>
             <div className="names">
@@ -52,33 +63,11 @@ export function UserApplicationsAccess({
               >
                 <strong>{application.name || application.clientId}</strong>
               </Link>
-              <span>
-                {application.disabled
-                  ? "Application désactivée"
-                  : user.banned
-                    ? "Compte désactivé"
-                    : allowed
-                      ? "Accès autorisé"
-                      : "Accès refusé"}
-              </span>
+              <span>{reason}</span>
             </div>
-            <select
-              aria-label={`Accès à ${application.name || application.clientId}`}
-              disabled={busy}
-              value={override ? (override.allowed ? "allow" : "deny") : "default"}
-              onChange={(e) =>
-                void update(
-                  `/api/admin/users/${encodeURIComponent(user.id)}/applications/${encodeURIComponent(application.clientId)}`,
-                  { access: e.target.value },
-                )
-              }
-            >
-              <option value="default">
-                Hérité · {inherited ? "autorisé" : "refusé"}
-              </option>
-              <option value="allow">Autoriser</option>
-              <option value="deny">Refuser</option>
-            </select>
+            <span className={`badge ${allowed ? "ok" : "bad"}`}>
+              {allowed ? "connexion autorisée" : "connexion refusée"}
+            </span>
           </div>
         );
       })}

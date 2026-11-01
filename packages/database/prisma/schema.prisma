@@ -153,7 +153,6 @@ model User {
   kind                String              @default("internal")
   /// Groups assigned by an administrator.
   groups              McpGroupUser[]
-  applicationAccesses ApplicationAccess[]
   banned              Boolean?            @default(false)
   banReason           String?
   banExpires          DateTime?
@@ -268,7 +267,6 @@ model OauthClient {
   clientDiscoveryId                String?
   accessRestricted                 Boolean               @default(false)
   applicationGroups                ApplicationGroup[]
-  applicationAccesses              ApplicationAccess[]
   disabled                         Boolean?              @default(false)
   skipConsent                      Boolean?
   enableEndSession                 Boolean?
@@ -446,17 +444,4 @@ model ApplicationGroup {
   @@id([clientId, groupId])
   @@index([groupId])
   @@map("application_groups")
-}
-
-/// Individual allow/deny overrides; explicit denial takes priority over groups.
-model ApplicationAccess {
-  clientId String
-  client   OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
-  userId   String
-  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  allowed  Boolean
-
-  @@id([clientId, userId])
-  @@index([userId])
-  @@map("application_access")
 }

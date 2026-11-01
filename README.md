@@ -110,24 +110,24 @@ niveau de lecture ou d'écriture et leurs instructions de connexion MCP.
 « Administration → Applications et ressources » propose un catalogue commun, avec recherche
 et filtres par type. Chaque application et ressource possède sa fiche avec une URL directe.
 Les fiches utilisateur et groupe, ainsi que leurs formulaires de création, sont également des
-pages complètes. Depuis une fiche utilisateur, on gère les groupes, les ressources, les exceptions
-d'accès aux applications et les clés API ; depuis une fiche groupe, on gère les membres et les
-applications et ressources associées.
+pages complètes. Depuis une fiche utilisateur, on gère les groupes, les ressources et les clés
+API, et on lit l'accès effectif à chaque application avec sa raison ; depuis une fiche groupe,
+on gère les membres et les applications et ressources associées.
 
 Le catalogue liste les clients OAuth déjà enregistrés (DCR ou CIMD), comme Coding factory. Une demande `openid profile email` permet de se connecter sans
 sélectionner de ressource MCP. `offline_access` permet aussi le renouvellement du jeton.
 
-Pour chaque application, l'administrateur peut :
+Pour chaque application, l'administrateur définit son nom, l'adresse publique utilisée dans
+« Mes applications », et une politique d'accès à trois états :
 
-- définir son nom et l'adresse publique utilisée dans « Mes applications » ;
-- activer ou désactiver les connexions ;
-- autoriser tous les utilisateurs (valeur par défaut, y compris pour les clients existants) ;
-- restreindre l'accès aux groupes sélectionnés et aux utilisateurs explicitement autorisés ;
-- refuser individuellement un utilisateur, avec priorité sur l'accès ouvert et les groupes.
+- **ouverte à tous les utilisateurs** (valeur par défaut, y compris pour les clients existants) ;
+- **réservée aux groupes sélectionnés** ;
+- **désactivée pour tout le monde**.
 
-Les groupes sont ceux de « Administration → Groupes ». Les administrateurs sont soumis aux
-mêmes règles d'accès aux applications. Un compte banni ou une application désactivée reste
-bloqué malgré une autorisation individuelle. Ces permissions sont indépendantes des ressources :
+Il n'y a pas d'exception par utilisateur : pour écarter un compte, on le retire du groupe ou on
+désactive le compte. Les groupes sont ceux de « Administration → Groupes ». Les administrateurs
+sont soumis aux mêmes règles d'accès aux applications. Un compte banni ou une application
+désactivée reste bloqué malgré les groupes. Ces permissions sont indépendantes des ressources :
 accéder à une application n'accorde aucun droit MCP supplémentaire.
 
 Les règles sont vérifiées à l'autorisation, au consentement, à l'émission et au renouvellement
@@ -136,8 +136,10 @@ application révoque ses jetons enregistrés et ses consentements ; un nouveau p
 est nécessaire au renouvellement. Une session déjà ouverte dans une application externe reste sous le contrôle de
 cette application : Rack ne peut pas la fermer directement.
 
-La migration `20261018120000_application_access` doit être appliquée avant de démarrer cette
-version (`pnpm --filter @rack/database migrate:deploy`, automatique avec l'image Docker).
+La migration `20261101120000_drop_application_access` doit être appliquée avant de démarrer
+cette version (`pnpm --filter @rack/database migrate:deploy`, automatique avec l'image Docker).
+Elle supprime les exceptions individuelles existantes : un compte qui n'était autorisé que par
+une exception doit être ajouté à un groupe lié à l'application.
 
 ### Reprendre une connexion OAuth expirée
 

@@ -360,11 +360,7 @@ function UserDetails({
 
         <section className="stack tight">
           <h3>Applications accessibles</h3>
-          <UserApplicationsAccess
-            applications={applications}
-            user={user}
-            onChanged={onChanged}
-          />
+          <UserApplicationsAccess applications={applications} user={user} />
         </section>
 
         <section className="stack tight">

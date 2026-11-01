@@ -176,7 +176,6 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         uri: true,
         disabled: true,
         accessRestricted: true,
-        applicationAccesses: { where: { userId: user.id }, select: { allowed: true } },
         applicationGroups: {
           where: { group: { users: { some: { userId: user.id } } } },
           select: { groupId: true },
@@ -220,16 +219,14 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         redirectUris: true,
         scopes: true,
         applicationGroups: { select: { groupId: true } },
-        applicationAccesses: { select: { userId: true, allowed: true } },
       },
     });
     return clients
       .filter((client) => !isRackApplication(client, deps.baseUrl))
-      .map(({ applicationGroups, applicationAccesses, ...client }) => ({
+      .map(({ applicationGroups, ...client }) => ({
         ...client,
         disabled: client.disabled ?? false,
         groupIds: applicationGroups.map((g) => g.groupId),
-        users: applicationAccesses,
       }));
   });
 
@@ -261,10 +258,6 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           disabled: z.boolean().optional(),
           accessRestricted: z.boolean().optional(),
           groupIds: z.array(z.string().min(1)).max(100).optional(),
-          users: z
-            .array(z.strictObject({ userId: z.string().min(1), allowed: z.boolean() }))
-            .max(500)
-            .optional(),
         })
         .safeParse(request.body);
       if (!parsed.success) return invalid(reply, parsed.error);
@@ -272,21 +265,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
       if (!client || isRackApplication(client, deps.baseUrl))
         return jsonError(reply, 404, "Unknown application");
-      const { name, uri, disabled, accessRestricted, groupIds, users } = parsed.data;
+      const { name, uri, disabled, accessRestricted, groupIds } = parsed.data;
       if (uri && isRackApplication({ clientId, uri }, deps.baseUrl))
         return jsonError(reply, 400, "Rack cannot be used as an application URL");
-      if (users && new Set(users.map((u) => u.userId)).size !== users.length)
-        return jsonError(reply, 400, "Duplicate user");
       if (groupIds) {
         const count = await deps.db.mcpGroup.count({ where: { id: { in: groupIds } } });
         if (count !== new Set(groupIds).size)
           return jsonError(reply, 404, "Unknown group");
-      }
-      if (users) {
-        const count = await deps.db.user.count({
-          where: { id: { in: users.map((u) => u.userId) } },
-        });
-        if (count !== users.length) return jsonError(reply, 404, "Unknown user");
       }
       await deps.db.$transaction([
         deps.db.oauthClient.update({
@@ -304,7 +289,6 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
                   },
                 }
               : {}),
-            ...(users ? { applicationAccesses: { deleteMany: {}, create: users } } : {}),
           },
         }),
         // Clear saved grants and refresh credentials when the policy changes.
@@ -323,38 +307,6 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       deps.db.oauthConsent.deleteMany({ where: { clientId } }),
     ];
   }
-
-  app.put<{ Params: { id: string; clientId: string } }>(
-    "/api/admin/users/:id/applications/:clientId",
-    async (request, reply) => {
-      if (!(await requireAdmin(request, reply))) return;
-      const parsed = z
-        .strictObject({ access: z.enum(["allow", "deny", "default"]) })
-        .safeParse(request.body);
-      if (!parsed.success) return invalid(reply, parsed.error);
-      const { id: userId, clientId } = request.params;
-      const [user, client] = await Promise.all([
-        deps.db.user.findUnique({ where: { id: userId }, select: { id: true } }),
-        deps.db.oauthClient.findUnique({
-          where: { clientId },
-          select: { id: true, clientId: true, uri: true },
-        }),
-      ]);
-      if (!user || !client || isRackApplication(client, deps.baseUrl))
-        return jsonError(reply, 404, "Unknown user or application");
-      await deps.db.$transaction([
-        parsed.data.access === "default"
-          ? deps.db.applicationAccess.deleteMany({ where: { userId, clientId } })
-          : deps.db.applicationAccess.upsert({
-              where: { clientId_userId: { clientId, userId } },
-              create: { clientId, userId, allowed: parsed.data.access === "allow" },
-              update: { allowed: parsed.data.access === "allow" },
-            }),
-        ...clearApplicationGrants(clientId),
-      ]);
-      return { userId, clientId, access: parsed.data.access };
-    },
-  );
 
   app.put<{ Params: { id: string; clientId: string } }>(
     "/api/admin/applications/:clientId/groups/:id",
