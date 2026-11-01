@@ -249,8 +249,10 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     const echo = await mcp.callTool({ name: "echo", arguments: { message: "oauth" } });
     expect(echo.structuredContent).toMatchObject({ via: "oauth", access: "read" });
     await mcp.close();
-    await db.applicationAccess.create({
-      data: { clientId: client.client_id, userId: user.id, allowed: false },
+    // Restricting the application without linking any group cuts the access.
+    await db.oauthClient.update({
+      where: { clientId: client.client_id },
+      data: { accessRestricted: true },
     });
     const applicationRevoked = await fetch(`${baseUrl}/mcp/sample`, {
       method: "POST",
@@ -261,7 +263,10 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       body: "{}",
     });
     expect(applicationRevoked.status).toBe(403);
-    await db.applicationAccess.deleteMany({ where: { clientId: client.client_id } });
+    await db.oauthClient.update({
+      where: { clientId: client.client_id },
+      data: { accessRestricted: false },
+    });
     await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
     const revoked = await fetch(`${baseUrl}/mcp/sample`, {
       method: "POST",
@@ -375,18 +380,13 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
         true,
       );
-      await db.applicationAccess.create({
-        data: { clientId, userId: user.id, allowed: false },
-      });
+      // Unlinking the group closes the restricted application again.
+      await db.applicationGroup.deleteMany({ where: { clientId, groupId: group.id } });
       expect((await authorize()).status).toBe(403);
       expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
         false,
       );
-      await db.applicationAccess.update({
-        where: { clientId_userId: { clientId, userId: user.id } },
-        data: { allowed: true },
-      });
-      await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
+      await db.applicationGroup.create({ data: { clientId, groupId: group.id } });
       const allowedRedirect = await redirectTarget(await authorize(), baseUrl);
       const accepted = await consent(allowedRedirect.search.slice(1));
       const acceptedBody = (await accepted.json()) as { url: string };
@@ -433,10 +433,8 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
           headers: { authorization: `Bearer ${tokens.access_token}` },
         });
       expect((await userInfo()).status).toBe(200);
-      await db.applicationAccess.update({
-        where: { clientId_userId: { clientId, userId: user.id } },
-        data: { allowed: false },
-      });
+      // Leaving the authorized group revokes the restricted application live.
+      await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
       expect((await userInfo()).status).toBe(403);
       const renewed = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
         method: "POST",
@@ -462,18 +460,6 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
           403,
         );
       }
-      expect(
-        (
-          await fetch(
-            `${baseUrl}/api/admin/users/${user.id}/applications/${encodeURIComponent(clientId)}`,
-            {
-              method: "PUT",
-              headers,
-              body: JSON.stringify({ access: "allow" }),
-            },
-          )
-        ).status,
-      ).toBe(403);
       expect(
         (
           await fetch(
@@ -521,15 +507,6 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
           404,
         );
       }
-      const setUserApplication = (access: string) =>
-        fetch(
-          `${baseUrl}/api/admin/users/${user.id}/applications/${encodeURIComponent(clientId)}`,
-          {
-            method: "PUT",
-            headers,
-            body: JSON.stringify({ access }),
-          },
-        );
       const setGroupApplication = (enabled: boolean) =>
         fetch(
           `${baseUrl}/api/admin/applications/${encodeURIComponent(clientId)}/groups/${group.id}`,
@@ -539,19 +516,10 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
             body: JSON.stringify({ enabled }),
           },
         );
-      expect((await setUserApplication("invalid")).status).toBe(400);
-      expect((await setUserApplication("allow")).status).toBe(200);
-      expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
-      expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);
-      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
-        true,
-      );
-      expect((await setUserApplication("default")).status).toBe(200);
-      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
-        false,
-      );
       await db.mcpGroupUser.create({ data: { userId: user.id, groupId: group.id } });
       expect((await setGroupApplication(false)).status).toBe(200);
+      expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
+      expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);
       expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
         false,
       );
@@ -559,11 +527,6 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
         true,
       );
-      expect((await setUserApplication("deny")).status).toBe(200);
-      expect((await myApplications()).some((app) => app.clientId === clientId)).toBe(
-        false,
-      );
-      expect((await setUserApplication("default")).status).toBe(200);
       expect((await patch({ uri: baseUrl })).status).toBe(400);
       await db.oauthClient.update({ where: { clientId }, data: { uri: `${baseUrl}/` } });
       expect(
@@ -604,22 +567,12 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       );
       await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
       expect((await patch({ groupIds: ["unknown"] })).status).toBe(404);
+      // Individual exceptions are gone: the former field is rejected outright.
+      expect((await patch({ users: [{ userId: user.id, allowed: true }] })).status).toBe(
+        400,
+      );
       expect(
-        (await patch({ users: [{ userId: "unknown", allowed: true }] })).status,
-      ).toBe(404);
-      expect(
-        (
-          await patch({
-            users: [
-              { userId: user.id, allowed: true },
-              { userId: user.id, allowed: false },
-            ],
-          })
-        ).status,
-      ).toBe(400);
-      expect(
-        (await patch({ disabled: true, accessRestricted: true, groupIds: [], users: [] }))
-          .status,
+        (await patch({ disabled: true, accessRestricted: true, groupIds: [] })).status,
       ).toBe(200);
       expect(await db.oauthConsent.count({ where: { clientId } })).toBe(0);
       expect(await db.oauthRefreshToken.count({ where: { clientId } })).toBe(0);

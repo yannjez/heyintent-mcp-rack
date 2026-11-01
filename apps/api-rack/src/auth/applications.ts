@@ -1,15 +1,15 @@
 import type { Db } from "@rack/database";
 
-/** Shared policy for sign-in and the personal application catalogue. */
+/**
+ * Shared policy for sign-in and the personal application catalogue.
+ * Three states: open to everyone, restricted to the linked groups, or disabled.
+ */
 export function applicationAllowed(client: {
   disabled: boolean | null;
   accessRestricted: boolean;
-  applicationAccesses: { allowed: boolean }[];
   applicationGroups: unknown[];
 }) {
   if (client.disabled) return false;
-  const override = client.applicationAccesses[0];
-  if (override) return override.allowed;
   return !client.accessRestricted || client.applicationGroups.length > 0;
 }
 
@@ -18,7 +18,6 @@ export async function canAccessApplication(db: Db, clientId: string, userId: str
     db.oauthClient.findUnique({
       where: { clientId },
       include: {
-        applicationAccesses: { where: { userId } },
         applicationGroups: {
           where: { group: { users: { some: { userId } } } },
         },

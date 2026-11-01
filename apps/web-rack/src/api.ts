@@ -271,7 +271,6 @@ export interface AdminApplication {
   disabled: boolean;
   accessRestricted: boolean;
   groupIds: string[];
-  users: { userId: string; allowed: boolean }[];
   redirectUris: string[];
   scopes: string[];
 }

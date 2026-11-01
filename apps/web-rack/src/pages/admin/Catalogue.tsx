@@ -40,7 +40,7 @@ export function AdminCataloguePage() {
       description: application.uri || "Application connectée à Rack",
       enabled: !application.disabled,
       access: application.accessRestricted
-        ? `${application.groupIds.length} groupe(s) · ${application.users.filter((user) => user.allowed).length} accès individuel(s)`
+        ? `Réservée à ${application.groupIds.length} groupe(s)`
         : "Tous les utilisateurs",
       path: `/admin/catalogue/applications/${encodeURIComponent(application.clientId)}`,
     })),

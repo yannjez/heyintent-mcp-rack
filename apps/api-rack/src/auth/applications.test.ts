@@ -12,7 +12,6 @@ describe("application access policy", () => {
   const open = {
     disabled: false,
     accessRestricted: false,
-    applicationAccesses: [],
     applicationGroups: [],
   };
   const restricted = { ...open, accessRestricted: true };
@@ -21,7 +20,7 @@ describe("application access policy", () => {
     expect(await canAccessApplication(database(open), "app", "user")).toBe(true);
     expect(await canAccessApplication(database(null), "app", "user")).toBe(false);
   });
-  it("requires an assignment on restricted applications", async () => {
+  it("requires a group assignment on restricted applications", async () => {
     expect(await canAccessApplication(database(restricted), "app", "user")).toBe(false);
     expect(
       await canAccessApplication(
@@ -30,37 +29,16 @@ describe("application access policy", () => {
         "user",
       ),
     ).toBe(true);
-    expect(
-      await canAccessApplication(
-        database({ ...restricted, applicationAccesses: [{ allowed: true }] }),
-        "app",
-        "user",
-      ),
-    ).toBe(true);
   });
-  it("prioritizes individual denial over group access and open access", async () => {
-    for (const client of [open, restricted]) {
-      expect(
-        await canAccessApplication(
-          database({
-            ...client,
-            applicationGroups: [{ groupId: "g" }],
-            applicationAccesses: [{ allowed: false }],
-          }),
-          "app",
-          "user",
-        ),
-      ).toBe(false);
-    }
-  });
-  it("blocks disabled applications and banned users despite individual grants", async () => {
-    const allowed = { ...open, applicationAccesses: [{ allowed: true }] };
+  it("blocks disabled applications and banned users despite group access", async () => {
+    const granted = { ...restricted, applicationGroups: [{ groupId: "g" }] };
     expect(
-      await canAccessApplication(database({ ...allowed, disabled: true }), "app", "user"),
+      await canAccessApplication(database({ ...granted, disabled: true }), "app", "user"),
     ).toBe(false);
-    expect(await canAccessApplication(database(allowed, true), "app", "user")).toBe(
+    expect(await canAccessApplication(database(granted, true), "app", "user")).toBe(
       false,
     );
+    expect(await canAccessApplication(database(open, true), "app", "user")).toBe(false);
   });
 });
 
