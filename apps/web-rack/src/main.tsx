@@ -12,6 +12,7 @@ import { api, ApiError, type Me } from "./api";
 import { Layout } from "./components/Layout";
 import { HomePage } from "./pages/Home";
 import { ApplicationsPage } from "./pages/Applications";
+import { ConsumersPage } from "./pages/Consumers";
 import { AdminCataloguePage } from "./pages/admin/Catalogue";
 import { AdminApplicationsPage } from "./pages/admin/Applications";
 import { AdminGroupsPage } from "./pages/admin/Groups";
@@ -78,6 +79,7 @@ const router = createBrowserRouter([
       { path: "/", element: <HomePage /> },
       { path: "/applications", element: <ApplicationsPage /> },
       { path: "/ressources", element: <Resources /> },
+      { path: "/consommateurs", element: <ConsumersPage /> },
       { path: "/keys", element: <KeysPage /> },
     ],
   },

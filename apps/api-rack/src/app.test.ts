@@ -21,6 +21,7 @@ const BASE_GROUP = "vitest-base-group";
 const RESOURCE_SLUGS = ["vitest-site", "vitest-remote", "vitest-partner"];
 const EARLY_CLIENT = "Vitest early client";
 const EARLY_REDIRECT = "http://127.0.0.1:9/callback";
+const CLIENT_NAMES = [EARLY_CLIENT, "Vitest agent", "Vitest declared app"];
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -36,6 +37,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
+    await db.oauthClient.deleteMany({ where: { name: { in: CLIENT_NAMES } } });
     await db.mcp.updateMany({
       where: { slug: "sample" },
       data: { enabled: true, allowedCapabilities: [] },
@@ -82,7 +84,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
-    await db.oauthClient.deleteMany({ where: { name: EARLY_CLIENT } });
+    await db.oauthClient.deleteMany({ where: { name: { in: CLIENT_NAMES } } });
     await db.$disconnect();
   });
 
@@ -1026,5 +1028,97 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     expect(await restored).toContain("remember");
     await client.close();
+  });
+
+  it("separates declared applications from the agents that registered themselves", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+
+    // An agent registering itself: born a consumer, never a declared app.
+    const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Vitest agent",
+        application_type: "native",
+        redirect_uris: ["http://127.0.0.1:7777/callback"],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    const agent = (await registration.json()) as { client_id: string };
+    expect(
+      (await db.oauthClient.findUniqueOrThrow({ where: { clientId: agent.client_id } }))
+        .kind,
+    ).toBe("consumer");
+
+    // An admin declaring an application: credentials returned once.
+    const create = await fetch(`${baseUrl}/api/admin/applications`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Vitest declared app",
+        uri: "https://app.vitest.example",
+        redirectUris: ["https://app.vitest.example/callback"],
+      }),
+    });
+    const declared = (await create.json()) as {
+      clientId: string;
+      clientSecret: string | null;
+      kind: string;
+    };
+    expect(create.status, JSON.stringify(declared)).toBe(201);
+    expect(declared.kind).toBe("application");
+    expect(declared.clientSecret).toBeTruthy();
+
+    // « Mes applications » shows the declared app, never the agent.
+    const applications = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; url: string | null }>;
+    expect(applications.map((a) => a.clientId)).toContain(declared.clientId);
+    expect(applications.map((a) => a.clientId)).not.toContain(agent.client_id);
+
+    // « Mes consommateurs » is empty until this account authorises the agent.
+    const before = (await (
+      await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string }>;
+    expect(before.map((c) => c.clientId)).not.toContain(agent.client_id);
+
+    await db.oauthConsent.create({
+      data: {
+        id: `vitest-consent-${agent.client_id}`,
+        clientId: agent.client_id,
+        userId: user.id,
+        scopes: ["openid"],
+        resources: [],
+        requestedUserInfoClaims: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    const after = (await (
+      await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; name: string | null }>;
+    expect(after.map((c) => c.clientId)).toContain(agent.client_id);
+    // …and only for that account: another user's consent is not theirs.
+    const other = await db.user.findUniqueOrThrow({ where: { email: CLIENT_EMAIL } });
+    expect(other.id).not.toBe(user.id);
+    const otherConsents = await db.oauthConsent.count({
+      where: { userId: other.id, clientId: agent.client_id },
+    });
+    expect(otherConsents).toBe(0);
+
+    // An admin can promote an agent that is in fact an application.
+    await fetch(
+      `${baseUrl}/api/admin/applications/${encodeURIComponent(agent.client_id)}`,
+      { method: "PATCH", headers, body: JSON.stringify({ kind: "application" }) },
+    );
+    const catalogue = (await (
+      await fetch(`${baseUrl}/api/admin/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; kind: string }>;
+    expect(catalogue.find((c) => c.clientId === agent.client_id)?.kind).toBe(
+      "application",
+    );
   });
 });

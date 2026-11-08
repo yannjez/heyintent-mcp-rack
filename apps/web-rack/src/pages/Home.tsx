@@ -1,6 +1,7 @@
 import { useOutletContext } from "react-router";
 import type { Me } from "../api";
 import { ApplicationsPage } from "./Applications";
+import { ConsumersPage } from "./Consumers";
 import { McpsPage } from "./Mcps";
 
 export function HomePage() {
@@ -17,6 +18,9 @@ export function HomePage() {
           <a className="btn" href="#mes-ressources">
             Mes ressources
           </a>
+          <a className="btn" href="#mes-consommateurs">
+            Mes consommateurs
+          </a>
         </div>
       </div>
       <div id="mes-applications">
@@ -29,6 +33,9 @@ export function HomePage() {
       >
         <McpsPage me={me} showWelcome={false} />
       </section>
+      <div id="mes-consommateurs">
+        <ConsumersPage />
+      </div>
     </>
   );
 }

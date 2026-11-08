@@ -266,6 +266,9 @@ model OauthClient {
   clientId                         String
   clientSecret                     String?
   clientDiscoveryId                String?
+  /// "application" (opened by a user) or "consumer" (an agent calling the MCP
+  /// endpoints). A client that registers itself is born a consumer.
+  kind                             String                @default("consumer")
   accessRestricted                 Boolean               @default(false)
   applicationGroups                ApplicationGroup[]
   disabled                         Boolean?              @default(false)

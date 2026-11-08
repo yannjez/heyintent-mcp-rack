@@ -1,4 +1,4 @@
-import { ACCESS_LEVELS, USER_KINDS } from "@rack/mcp-kit";
+import { ACCESS_LEVELS, CLIENT_KINDS, isClientKind, USER_KINDS } from "@rack/mcp-kit";
 import type { Db } from "@rack/database";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -73,6 +73,30 @@ const patchUserSchema = z.strictObject({
   groupIds: z.array(z.string().min(1).max(100)).max(100).optional(),
 });
 
+/** An address a browser can be sent to: http(s), and no credentials in it. */
+const httpUrl = z
+  .string()
+  .url()
+  .max(2000)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, "Use an HTTP(S) URL without credentials");
+
+const createApplicationSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  /** Where "Ouvrir l'application" sends the user. */
+  uri: httpUrl.optional(),
+  /** Required by OAuth: where the authorization code comes back. */
+  redirectUris: z.array(httpUrl).min(1).max(10),
+  accessRestricted: z.boolean().default(false),
+  groupIds: z.array(z.string().min(1).max(100)).max(100).default([]),
+});
+
 const accessSchema = z.object({
   /** "none" blocks the MCP despite the user's groups; "default" removes the override. */
   access: z.enum([...ACCESS_LEVELS, "none", "default"]),
@@ -114,6 +138,22 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   function invalid(reply: FastifyReply, error: z.ZodError) {
     return jsonError(reply, 400, error.issues.map((i) => i.message).join("; "));
+  }
+
+  /**
+   * The address a browser may be sent to, or null. A client may register any
+   * `client_uri`, so only plain http(s) without embedded credentials is
+   * handed to the UI; native agents usually have none at all.
+   */
+  function publicUrl(uri: string | null): string | null {
+    try {
+      const parsed = new URL(uri ?? "");
+      if (!["https:", "http:"].includes(parsed.protocol)) return null;
+      if (parsed.username || parsed.password) return null;
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -185,6 +225,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     if (!user) return jsonError(reply, 401, "Sign in required");
     if (user.banned) return [];
     const clients = await deps.db.oauthClient.findMany({
+      where: { kind: "application" },
       orderBy: [{ name: "asc" }, { clientId: "asc" }],
       select: {
         clientId: true,
@@ -203,21 +244,60 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         (client) =>
           !isRackApplication(client, deps.baseUrl) && applicationAllowed(client),
       )
-      .map(({ clientId, name, uri }) => {
-        let url: string | null = null;
-        try {
-          const parsed = new URL(uri ?? "");
-          if (
-            ["https:", "http:"].includes(parsed.protocol) &&
-            !parsed.username &&
-            !parsed.password
-          )
-            url = parsed.toString();
-        } catch {
-          /* Native clients may have no website. */
-        }
-        return { clientId, name, url };
-      });
+      .map(({ clientId, name, uri }) => ({
+        clientId,
+        name,
+        url: publicUrl(uri),
+      }));
+  });
+
+  /**
+   * The agents this account connected to the rack (Codex, Claude Code…).
+   *
+   * Unlike applications, a consumer is listed only for the users who actually
+   * signed in through it: an agent registers itself, unrestricted, so the
+   * group policy would otherwise show everyone's agents to everyone. The
+   * consent row is the link, and it is also what the user would revoke.
+   */
+  app.get("/api/consumers", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    if (user.banned) return [];
+    const consents = await deps.db.oauthConsent.findMany({
+      where: { userId: user.id, oauthclient: { kind: "consumer" } },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        updatedAt: true,
+        oauthclient: {
+          select: {
+            clientId: true,
+            name: true,
+            uri: true,
+            disabled: true,
+            accessRestricted: true,
+            applicationGroups: {
+              where: { group: { users: { some: { userId: user.id } } } },
+              select: { groupId: true },
+            },
+          },
+        },
+      },
+    });
+    const seen = new Set<string>();
+    return consents
+      .filter(({ oauthclient }) => {
+        if (seen.has(oauthclient.clientId)) return false;
+        seen.add(oauthclient.clientId);
+        return (
+          !isRackApplication(oauthclient, deps.baseUrl) && applicationAllowed(oauthclient)
+        );
+      })
+      .map(({ oauthclient, updatedAt }) => ({
+        clientId: oauthclient.clientId,
+        name: oauthclient.name,
+        url: publicUrl(oauthclient.uri),
+        connectedAt: updatedAt,
+      }));
   });
 
   // ---------------------------------------------------------------- Applications
@@ -230,20 +310,108 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         clientId: true,
         name: true,
         uri: true,
+        kind: true,
         disabled: true,
         accessRestricted: true,
         redirectUris: true,
         scopes: true,
+        userId: true,
         applicationGroups: { select: { groupId: true } },
+        oauthconsents: {
+          distinct: ["userId"],
+          select: { user: { select: { id: true, email: true } } },
+        },
       },
     });
-    return clients
-      .filter((client) => !isRackApplication(client, deps.baseUrl))
-      .map(({ applicationGroups, ...client }) => ({
-        ...client,
-        disabled: client.disabled ?? false,
-        groupIds: applicationGroups.map((g) => g.groupId),
-      }));
+    return (
+      clients
+        .filter((client) => !isRackApplication(client, deps.baseUrl))
+        // `userId` is Better Auth's registrant: dropped, the consents below say
+        // who actually uses the client.
+        .map(({ applicationGroups, oauthconsents, userId: _userId, ...client }) => ({
+          ...client,
+          kind: isClientKind(client.kind) ? client.kind : "consumer",
+          disabled: client.disabled ?? false,
+          groupIds: applicationGroups.map((g) => g.groupId),
+          /** Who signed in through it — the only meaningful owner of an agent. */
+          users: oauthconsents.flatMap((consent) =>
+            consent.user ? [{ id: consent.user.id, email: consent.user.email }] : [],
+          ),
+        }))
+    );
+  });
+
+  /**
+   * Declare an application: a product someone opens, which signs its users in
+   * through the rack. Registration goes through Better Auth's own dynamic
+   * registration endpoint so the credentials are built exactly as they are
+   * for a client that registers itself — only the kind and the access policy
+   * are ours. The secret is returned once and never stored in clear.
+   */
+  app.post("/api/admin/applications", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const parsed = createApplicationSchema.safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { name, uri, redirectUris, accessRestricted, groupIds } = parsed.data;
+    if (uri && isRackApplication({ clientId: "", uri }, deps.baseUrl))
+      return jsonError(reply, 400, "Rack cannot be used as an application URL");
+    if (groupIds.length > 0) {
+      const count = await deps.db.mcpGroup.count({ where: { id: { in: groupIds } } });
+      if (count !== new Set(groupIds).size) return jsonError(reply, 404, "Unknown group");
+    }
+    const registration = await deps.auth.handler(
+      new Request(new URL("/api/auth/oauth2/register", deps.baseUrl), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: name,
+          ...(uri ? { client_uri: uri } : {}),
+          redirect_uris: redirectUris,
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "client_secret_basic",
+        }),
+      }),
+    );
+    const registered = (await registration.json()) as {
+      client_id?: string;
+      client_secret?: string;
+      error_description?: string;
+      error?: string;
+    };
+    if (!registration.ok || !registered.client_id) {
+      return jsonError(
+        reply,
+        502,
+        registered.error_description ?? registered.error ?? "Registration refused",
+      );
+    }
+    const clientId = registered.client_id;
+    await deps.db.oauthClient.update({
+      where: { clientId },
+      data: {
+        kind: "application",
+        accessRestricted,
+        ...(groupIds.length > 0
+          ? {
+              applicationGroups: {
+                create: [...new Set(groupIds)].map((groupId) => ({ groupId })),
+              },
+            }
+          : {}),
+      },
+    });
+    // The only time the secret leaves the rack: it is hashed at rest.
+    return reply.status(201).send({
+      clientId,
+      clientSecret: registered.client_secret ?? null,
+      name,
+      uri: uri ?? null,
+      redirectUris,
+      kind: "application" as const,
+      accessRestricted,
+      groupIds,
+    });
   });
 
   app.patch<{ Params: { clientId: string } }>(
@@ -271,6 +439,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
             }, "Use an HTTP(S) application URL without credentials")
             .nullable()
             .optional(),
+          /** Promote an agent that registered itself, or demote a declared app. */
+          kind: z.enum(CLIENT_KINDS).optional(),
           disabled: z.boolean().optional(),
           accessRestricted: z.boolean().optional(),
           groupIds: z.array(z.string().min(1)).max(100).optional(),
@@ -281,7 +451,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
       if (!client || isRackApplication(client, deps.baseUrl))
         return jsonError(reply, 404, "Unknown application");
-      const { name, uri, disabled, accessRestricted, groupIds } = parsed.data;
+      const { name, uri, kind, disabled, accessRestricted, groupIds } = parsed.data;
       if (uri && isRackApplication({ clientId, uri }, deps.baseUrl))
         return jsonError(reply, 400, "Rack cannot be used as an application URL");
       if (groupIds) {
@@ -295,6 +465,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           data: {
             ...(name !== undefined ? { name } : {}),
             ...(uri !== undefined ? { uri } : {}),
+            ...(kind !== undefined ? { kind } : {}),
             ...(disabled !== undefined ? { disabled } : {}),
             ...(accessRestricted !== undefined ? { accessRestricted } : {}),
             ...(groupIds

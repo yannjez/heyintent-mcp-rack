@@ -155,7 +155,29 @@ pages complètes. Depuis une fiche utilisateur, on gère les groupes, les ressou
 API, et on lit l'accès effectif à chaque application avec sa raison ; depuis une fiche groupe,
 on gère les membres et les applications et ressources associées.
 
-Le catalogue liste les clients OAuth déjà enregistrés (DCR ou CIMD), comme Coding factory. Une demande `openid profile email` permet de se connecter sans
+### Applications, consommateurs, ressources
+
+Trois collections, qu'il ne faut pas confondre :
+
+- une **application** est un produit qu'on ouvre, qui connecte ses utilisateurs via le rack.
+  Un admin la déclare (« Déclarer une application » : nom, adresse publique, URL de redirection) ;
+  le rack l'enregistre comme client OAuth et rend le `client_secret` **une seule fois**. Elle
+  suit la politique d'accès à trois états ci-dessous.
+- un **consommateur** est un agent qui appelle les endpoints MCP : Codex, Claude Code, Cursor.
+  Il **s'enregistre lui-même** (DCR ou CIMD) et naît consommateur. Il n'apparaît dans l'espace
+  personnel **que pour les comptes qui l'ont réellement autorisé** (ligne de consentement OAuth) :
+  un agent étant ouvert à tous par défaut, la règle de groupes montrerait sinon les agents de
+  chacun à tout le monde.
+- une **ressource** est un MCP servi sur `/mcp/<slug>` : un package, un **site** (contenu exposé
+  en tools via le package `site-public`) ou un **MCP distant** relayé. Attention : le kind
+  « site » est une ressource MCP, pas une application web — pour déclarer un produit, c'est
+  « Déclarer une application ».
+
+Le type se corrige depuis la fiche du client : un admin promeut un consommateur en application,
+ou l'inverse. À la migration, les clients existants ayant une adresse publique sont devenus des
+applications, les autres des consommateurs.
+
+Une demande `openid profile email` permet de se connecter sans
 sélectionner de ressource MCP. `offline_access` permet aussi le renouvellement du jeton.
 
 Pour chaque application, l'administrateur définit son nom, l'adresse publique utilisée dans

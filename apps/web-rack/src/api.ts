@@ -264,19 +264,44 @@ export function formatRelative(value: string | null | undefined) {
   return formatDate(value);
 }
 
+/**
+ * An application is declared by an admin and opened by a user; a consumer is
+ * an agent that registered itself to call the MCP endpoints.
+ */
+export const CLIENT_KINDS = ["application", "consumer"] as const;
+export type ClientKind = (typeof CLIENT_KINDS)[number];
+
+export const CLIENT_KIND_NAMES: Record<ClientKind, string> = {
+  application: "Application",
+  consumer: "Consommateur",
+};
+
 export interface AdminApplication {
   clientId: string;
   name: string | null;
   uri: string | null;
+  kind: ClientKind;
   disabled: boolean;
   accessRestricted: boolean;
   groupIds: string[];
   redirectUris: string[];
   scopes: string[];
+  /** Accounts that signed in through this client. */
+  users: Array<{ id: string; email: string }>;
+}
+
+/** What an admin gets back once, when declaring an application. */
+export interface CreatedApplication extends AdminApplication {
+  clientSecret: string | null;
 }
 
 export interface UserApplication {
   clientId: string;
   name: string | null;
   url: string | null;
+}
+
+export interface UserConsumer extends UserApplication {
+  /** When this account last granted it access. */
+  connectedAt: string;
 }
