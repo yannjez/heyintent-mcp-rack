@@ -944,4 +944,87 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     expect(journal.length).toBeGreaterThan(0);
   });
+
+  it("reloads the tools of a resource on demand, and refuses it for a package", async () => {
+    // No content-type: Fastify answers 400 to a bodyless JSON request, which
+    // would mask the statuses this test is about.
+    const reload = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    const reloaded = (await reload.json()) as {
+      tools: Array<{ name: string }>;
+      loadError: string | null;
+    };
+    expect(reload.status, JSON.stringify(reloaded)).toBe(200);
+    expect(reloaded.loadError).toBeNull();
+    expect(reloaded.tools.map((t) => t.name)).toContain("remember");
+
+    // A package's definition is the module imported at boot: not reloadable.
+    const pkg = await fetch(`${baseUrl}/api/admin/mcps/sample/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(pkg.status).toBe(400);
+    expect((await pkg.json()).error).toMatch(/redémarrage/);
+
+    const unknown = await fetch(`${baseUrl}/api/admin/mcps/nope/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(unknown.status).toBe(404);
+  });
+
+  it("tells a connected client to list the tools again when its rights change", async () => {
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+    const url = `${baseUrl}/api/admin/users/${user.id}/mcps/sample`;
+    const headers = { "content-type": "application/json", cookie };
+    let announce: ((tools: string[]) => void) | undefined;
+    const nextChange = () =>
+      new Promise<string[]>((resolve) => {
+        announce = resolve;
+      });
+
+    const client = new Client(
+      { name: "test", version: "0.0.0" },
+      {
+        // The 2025 handshake is served statelessly and has no stream to push
+        // on: only a client that negotiated 2026-07-28 is notified.
+        versionNegotiation: { mode: "auto" },
+        listChanged: {
+          tools: {
+            debounceMs: 0,
+            onChanged: (error, tools) => {
+              if (!error) announce?.((tools ?? []).map((tool) => tool.name));
+            },
+          },
+        },
+      },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp/sample`), {
+        requestInit: { headers: { authorization: `Bearer ${apiKey}` } },
+      }),
+    );
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("remember");
+
+    // The write tools go away without the client reconnecting…
+    const downgraded = nextChange();
+    await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ access: "read" }),
+    });
+    expect(await downgraded).not.toContain("remember");
+
+    // …and come back the same way, leaving the rights as the suite set them.
+    const restored = nextChange();
+    await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ access: "write" }),
+    });
+    expect(await restored).toContain("remember");
+    await client.close();
+  });
 });

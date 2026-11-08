@@ -103,6 +103,42 @@ Les deux modes produisent la même `Identity` côté serveur (`userId`, `grants.
 Accès effectif = disponibilité via un groupe commun ∩ droits individuels (lecture par défaut)
 ∩ niveau porté par la credential. Sans groupe commun, le MCP répond 403. En lecture, seuls les tools `readOnlyHint: true` sont servis.
 
+### Rafraîchir la liste des tools
+
+La liste des tools est recalculée à chaque `tools/list`, à partir des droits du porteur de la
+credential. Quand ces droits changent (lecture ⇄ écriture, groupe ajouté ou retiré, MCP activé
+ou désactivé, ressource modifiée), le rack publie `notifications/tools/list_changed` : le client
+rappelle `tools/list` sans être relancé.
+
+La notification voyage sur le flux `subscriptions/listen` de la révision **2026-07-28**. Un
+client resté sur la famille 2025 est servi sans session (`legacy: "stateless"`) : aucun canal ne
+permet de le prévenir, il se rafraîchit en se reconnectant. Le SDK officiel négocie la révision
+2025 par défaut — un client doit demander `versionNegotiation: { mode: "auto" }` pour obtenir le
+flux.
+
+Les clients ne le font pas tous. Mesuré le 2026-11-08, **Codex CLI 0.167 ouvre un `initialize`
+en `2025-06-18`** : il ne sonde pas `server/discover`, n'ouvre aucune souscription et ne reçoit
+donc rien. Pour lui, rafraîchir = relancer la session. Le binaire contient pourtant les symboles
+`subscriptions/listen` et `notifications/tools/list_changed`, donc l'opt-in viendra
+probablement ; à revérifier sur les versions suivantes.
+
+La diffusion se fait par MCP, pas par utilisateur : modifier les droits d'une personne fait
+re-lister tous les clients connectés à ce MCP. Chacun reçoit sa propre liste, le bus ne transporte
+simplement aucune information de routage. Le rack utilise un bus en mémoire (`McpNotifier`) ; en
+plusieurs répliques, il faut lui fournir un `ServerEventBus` partagé (`createBus`) au-dessus de
+`LISTEN/NOTIFY` ou d'un autre pub/sub.
+
+**Bouton « Recharger les outils »** — sur la fiche d'un site ou d'un MCP distant
+(`POST /api/admin/mcps/<slug>/reload`) : le rack réinterroge le serveur cible, met à jour les
+outils affichés dans l'administration et publie `tools/list_changed`. Pratique quand on ajoute
+un tool au serveur distant pendant qu'il tourne.
+
+Le bouton n'existe pas pour les packages `mcps/<slug>`, et la route les refuse : leur définition
+est le module importé au démarrage, et le ré-importer laisserait les autres fichiers du package
+sur l'ancien code. En développement, `tsx watch` redémarre api-rack dès que `mcps/<slug>/dist`
+change — c'est la façon prévue de les recharger, et comme le rack est sans session, le
+`tools/list` suivant renvoie déjà la nouvelle liste.
+
 ## Applications, ressources et espace personnel
 
 Après connexion, l'accueil réunit « Mes applications » et « Mes ressources ». Les applications

@@ -50,6 +50,8 @@ export function AdminMcpsPage() {
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reloaded, setReloaded] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     api<AdminMcp[]>("/api/admin/mcps")
@@ -74,6 +76,32 @@ export function AdminMcpsPage() {
       reload();
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  /**
+   * Ask the rack to query the target server again. The tools listed here are
+   * refreshed, and the clients listening on this MCP are told to call
+   * `tools/list` again — no restart, no reconnection on their side.
+   */
+  async function reloadTools(slug: string) {
+    setError(null);
+    setReloaded(null);
+    setReloading(true);
+    try {
+      const mcp = await api<AdminMcp>(`/api/admin/mcps/${slug}/reload`, {
+        method: "POST",
+      });
+      setReloaded(
+        `${mcp.tools.length} outil${mcp.tools.length > 1 ? "s" : ""} rechargé${
+          mcp.tools.length > 1 ? "s" : ""
+        }`,
+      );
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReloading(false);
     }
   }
 
@@ -103,12 +131,23 @@ export function AdminMcpsPage() {
         lead="Gérez les groupes autorisés, la connexion et les outils de cette ressource."
         actions={
           current && current.kind !== "package" ? (
-            <button className="btn ghost" onClick={() => setEditing(true)}>
-              <Icon name="edit" /> Modifier la ressource
-            </button>
+            <>
+              <button
+                className="btn ghost"
+                disabled={reloading}
+                onClick={() => void reloadTools(current.slug)}
+              >
+                <Icon name="refresh" />{" "}
+                {reloading ? "Rechargement…" : "Recharger les outils"}
+              </button>
+              <button className="btn ghost" onClick={() => setEditing(true)}>
+                <Icon name="edit" /> Modifier la ressource
+              </button>
+            </>
           ) : undefined
         }
       />
+      {reloaded && <div className="alert success">{reloaded}</div>}
       {loading && <p className="muted">Chargement…</p>}
       {!loading && !error && !current && <p className="muted">Ressource introuvable.</p>}
       {error && <div className="alert error">{error}</div>}

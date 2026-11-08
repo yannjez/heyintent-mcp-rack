@@ -12,6 +12,7 @@ import type { Auth } from "../auth/auth.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
 import { presentKey } from "../keys/routes.js";
+import type { McpNotifier } from "../mcp/notifier.js";
 import { type McpRegistry, RegistryError } from "../mcp/registry.js";
 import {
   parseResourceConfig,
@@ -25,6 +26,8 @@ export interface AdminRoutesDeps {
   db: Db;
   registry: McpRegistry;
   baseUrl: string;
+  /** Shared with the MCP routes: pushes `tools/list_changed` when rights move. */
+  notifier: McpNotifier;
 }
 
 const patchMcpSchema = z.object({
@@ -111,6 +114,19 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   function invalid(reply: FastifyReply, error: z.ZodError) {
     return jsonError(reply, 400, error.issues.map((i) => i.message).join("; "));
+  }
+
+  /**
+   * MCPs these groups make available: changing a group, or who belongs to it,
+   * changes the tool list its members are served.
+   */
+  async function slugsOfGroups(groupIds: string[]): Promise<string[]> {
+    if (groupIds.length === 0) return [];
+    const rows = await deps.db.mcpGroupMcp.findMany({
+      where: { groupId: { in: [...new Set(groupIds)] } },
+      include: { mcp: { select: { slug: true } } },
+    });
+    return rows.map((row) => row.mcp.slug);
   }
 
   app.get("/api/me", async (request, reply) => {
@@ -436,8 +452,11 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
         resource = parsedConfig.value;
       }
-      if (enabled !== undefined) {
+      if (enabled !== undefined && enabled !== record.enabled) {
         await deps.db.mcp.update({ where: { slug }, data: { enabled } });
+        // A disabled MCP answers 404; connected clients should stop offering
+        // its tools without waiting for the next call to fail.
+        deps.notifier.toolsChanged([slug]);
       }
       if (kind !== "package" && editsResource) {
         try {
@@ -449,6 +468,39 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         } catch (error) {
           return registryFailure(reply, error);
         }
+      }
+      return presentMcp(slug);
+    },
+  );
+
+  /**
+   * Re-discover the tools of a site or remote resource, without a restart.
+   * The upstream server is queried again, the admin catalog is refreshed and
+   * `tools/list_changed` goes out to the clients listening on this MCP.
+   *
+   * Packages are not reloadable: their definition is the module imported at
+   * boot, and re-importing it would leave the rest of the package's files on
+   * the old code. In development `tsx watch` restarts the rack when
+   * `mcps/<slug>/dist` changes, which is the supported way to pick them up.
+   */
+  app.post<{ Params: { slug: string } }>(
+    "/api/admin/mcps/:slug/reload",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      const slug = request.params.slug;
+      const record = await deps.db.mcp.findUnique({ where: { slug } });
+      if (!record) return jsonError(reply, 404, "Unknown MCP");
+      if ((deps.registry.kind(slug) ?? "package") === "package") {
+        return jsonError(
+          reply,
+          400,
+          "Les packages livrés avec le rack sont rechargés au redémarrage",
+        );
+      }
+      try {
+        await deps.registry.reload(slug);
+      } catch (error) {
+        return registryFailure(reply, error);
       }
       return presentMcp(slug);
     },
@@ -609,6 +661,15 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         if (groups.length !== new Set(groupIds).size)
           return jsonError(reply, 404, "Unknown group");
       }
+      // Groups left behind matter as much as groups joined, and a ban revokes
+      // everything: read the current membership before it is replaced.
+      const touched =
+        groupIds !== undefined || banned !== undefined
+          ? await deps.db.mcpGroupUser.findMany({
+              where: { userId: existing.id },
+              select: { groupId: true },
+            })
+          : [];
       const updated = await deps.db.user.update({
         where: { id: request.params.id },
         data: {
@@ -630,6 +691,14 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       });
       if (banned) {
         await deps.db.session.deleteMany({ where: { userId: updated.id } });
+      }
+      if (touched.length > 0 || groupIds?.length) {
+        deps.notifier.toolsChanged(
+          await slugsOfGroups([
+            ...touched.map((row) => row.groupId),
+            ...(groupIds ?? []),
+          ]),
+        );
       }
       return {
         id: updated.id,
@@ -684,6 +753,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         await deps.db.mcpAccess.deleteMany({
           where: { mcpId: registered.record.id, userId: user.id },
         });
+        deps.notifier.toolsChanged([registered.record.slug]);
         return { slug: registered.record.slug, access: null };
       }
       const row = await deps.db.mcpAccess.upsert({
@@ -696,6 +766,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
         update: { access: parsed.data.access, grantedBy: admin.id },
       });
+      // Read ⇄ write changes which tools the user is served: tell the clients
+      // listening on this MCP to list again.
+      deps.notifier.toolsChanged([registered.record.slug]);
       return { slug: registered.record.slug, access: row.access };
     },
   );
@@ -765,6 +838,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     const group = await deps.db.mcpGroup.create({
       data: { name, description, mcps: { create: rows } },
     });
+    deps.notifier.toolsChanged(mcps);
     return reply.status(201).send(await presentGroup(group));
   });
 
@@ -799,10 +873,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     "/api/admin/groups/:id",
     async (request, reply) => {
       if (!(await requireAdmin(request, reply))) return;
+      // Read the MCPs the group made available before the cascade removes them.
+      const slugs = await slugsOfGroups([request.params.id]);
       const result = await deps.db.mcpGroup.deleteMany({
         where: { id: request.params.id },
       });
       if (result.count === 0) return jsonError(reply, 404, "Unknown group");
+      deps.notifier.toolsChanged(slugs);
       return { deleted: true };
     },
   );
@@ -823,6 +900,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const mcpId = registered.record.id;
       if (!parsed.data.enabled) {
         await deps.db.mcpGroupMcp.deleteMany({ where: { groupId: group.id, mcpId } });
+        deps.notifier.toolsChanged([registered.record.slug]);
         return { slug: registered.record.slug, enabled: false };
       }
       await deps.db.mcpGroupMcp.upsert({
@@ -830,6 +908,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         create: { groupId: group.id, mcpId },
         update: {},
       });
+      deps.notifier.toolsChanged([registered.record.slug]);
       return { slug: registered.record.slug, enabled: true };
     },
   );
