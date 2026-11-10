@@ -273,9 +273,8 @@ export function NewResourceModal({
               <span>
                 <strong>Application</strong>
                 <small>
-                  Un produit que vos utilisateurs ouvrent et qui les connecte via le
-                  rack. Ce n'est pas une ressource MCP : ouvre le formulaire de
-                  déclaration.
+                  Un produit que vos utilisateurs ouvrent et qui les connecte via le rack.
+                  Ce n'est pas une ressource MCP : ouvre le formulaire de déclaration.
                 </small>
               </span>
             </button>

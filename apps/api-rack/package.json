@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "auth:repair-jwks": "tsx --env-file-if-exists=../../.env src/auth/repair-jwks.ts",
+    "dev:seed": "tsx --env-file-if-exists=../../.env src/dev-seed.ts",
     "auth:schema": "auth generate --config src/auth/auth.cli.ts --output ../../packages/database/prisma/schema.prisma -y"
   },
   "dependencies": {
