@@ -27,8 +27,10 @@ export interface ResourceDraft {
 
 const KIND_HELP: Record<ResourceKind, { title: string; text: string; icon: string }> = {
   site: {
-    title: "Site",
-    text: "Un site public dont le rack pilote le contenu (pages, actualités, événements) via son API REST.",
+    // The name used to be just "Site", which reads like "my website" and sent
+    // people here when they wanted to declare an application.
+    title: "Contenu de site",
+    text: "Le contenu d'un site public (pages, actualités, événements), exposé en outils MCP via son API REST. Pour l'application que vos utilisateurs ouvrent, voir ci-dessous.",
     icon: "globe",
   },
   remote: {
@@ -185,9 +187,12 @@ export function ConnectionFields({
 export function NewResourceModal({
   onClose,
   onCreated,
+  onChooseApplication,
 }: {
   onClose: () => void;
   onCreated: (created: AdminMcp) => void;
+  /** Escape hatch to the other creation path, offered where the mistake happens. */
+  onChooseApplication?: () => void;
 }) {
   const [draft, setDraft] = useState<ResourceDraft>({
     kind: "site",
@@ -257,6 +262,24 @@ export function NewResourceModal({
               </span>
             </label>
           ))}
+          {/* Not a resource kind: the way out for someone in the wrong modal. */}
+          {onChooseApplication && (
+            <button
+              type="button"
+              className="kind-option as-link"
+              onClick={onChooseApplication}
+            >
+              <Icon name="grid" />
+              <span>
+                <strong>Application</strong>
+                <small>
+                  Un produit que vos utilisateurs ouvrent et qui les connecte via le
+                  rack. Ce n'est pas une ressource MCP : ouvre le formulaire de
+                  déclaration.
+                </small>
+              </span>
+            </button>
+          )}
         </fieldset>
         <div className="row" style={{ gap: 14, alignItems: "flex-start" }}>
           <label className="field" style={{ flex: 2 }}>

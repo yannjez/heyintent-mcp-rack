@@ -188,6 +188,7 @@ export function AdminCataloguePage() {
       {creating === "resource" && (
         <NewResourceModal
           onClose={() => setCreating(null)}
+          onChooseApplication={() => setCreating("application")}
           onCreated={(created) => {
             reload();
             navigate(`/admin/catalogue/ressources/${encodeURIComponent(created.slug)}`);
