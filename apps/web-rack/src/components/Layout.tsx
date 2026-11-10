@@ -56,7 +56,7 @@ export function Layout({ me }: { me: Me }) {
         <nav className="nav-group">
           <div className="nav-group-label">Mon espace</div>
           {link("/", "grid", "Mon espace", true)}
-          {link("/applications", "grid", "Mes applications")}
+          {link("/produits", "grid", "Mes produits")}
           {link("/ressources", "server", "Mes ressources")}
           {link("/consommateurs", "plug", "Mes consommateurs")}
           {link("/keys", "key", "Mes clés API")}

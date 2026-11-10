@@ -556,10 +556,13 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       const publicApplication = (await myApplications()).find(
         (app) => app.clientId === clientId,
       )!;
+      // An application carries the MCP channels of the same product; this one
+      // has none, and no OAuth credential ever leaves the rack.
       expect(publicApplication).toEqual({
         clientId,
         name: "Coding factory",
         url: "https://factory.example/",
+        resources: [],
       });
       await db.oauthClient.update({
         where: { clientId },

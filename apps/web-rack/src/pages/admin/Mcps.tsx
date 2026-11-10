@@ -1,6 +1,7 @@
 import { Link, useNavigate, useParams } from "react-router";
 import { useCallback, useEffect, useState } from "react";
 import {
+  type AdminApplication,
   type AdminGroup,
   type AdminMcp,
   api,
@@ -48,6 +49,7 @@ export function AdminMcpsPage() {
   const [loading, setLoading] = useState(true);
   const [mcps, setMcps] = useState<AdminMcp[]>([]);
   const [groups, setGroups] = useState<AdminGroup[]>([]);
+  const [applications, setApplications] = useState<AdminApplication[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -64,7 +66,24 @@ export function AdminMcpsPage() {
     api<AdminGroup[]>("/api/admin/groups")
       .then(setGroups)
       .catch((e: Error) => setError(e.message));
+    api<AdminApplication[]>("/api/admin/applications")
+      .then((apps) => setApplications(apps.filter((a) => a.kind === "application")))
+      .catch((e: Error) => setError(e.message));
   }, [reload]);
+
+  /** Attach this resource to an application, or detach it ("" = standalone). */
+  async function setApplication(slug: string, clientId: string) {
+    setError(null);
+    try {
+      await api(`/api/admin/mcps/${slug}`, {
+        method: "PATCH",
+        body: JSON.stringify({ clientId: clientId || null }),
+      });
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   async function setGroup(slug: string, groupId: string, enabled: boolean) {
     setError(null);
@@ -206,6 +225,28 @@ export function AdminMcpsPage() {
                       {mcp.loadError}
                     </div>
                   )}
+                  <section className="stack tight" style={{ marginBottom: 24 }}>
+                    <h3>Produit</h3>
+                    <p className="small muted">
+                      L'application dont cette ressource est le canal MCP. Les deux
+                      s'affichent alors comme un seul produit ; chacune garde ses propres
+                      règles d'accès.
+                    </p>
+                    <label className="field" style={{ maxWidth: 420 }}>
+                      Application
+                      <select
+                        value={mcp.clientId ?? ""}
+                        onChange={(e) => void setApplication(mcp.slug, e.target.value)}
+                      >
+                        <option value="">Ressource autonome</option>
+                        {applications.map((application) => (
+                          <option key={application.clientId} value={application.clientId}>
+                            {application.name || application.clientId}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </section>
                   <section className="stack tight" style={{ marginBottom: 24 }}>
                     <h3>Groupes autorisés</h3>
                     <p className="small muted">

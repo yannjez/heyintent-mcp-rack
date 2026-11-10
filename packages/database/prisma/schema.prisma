@@ -30,6 +30,10 @@ model Mcp {
   capabilities        String[]      @default([])
   /// Capabilities the admin allows (subset of declared). Empty = all declared.
   allowedCapabilities String[]      @default([])
+  /// The application this resource is a channel of: same product, other face.
+  /// Null for a resource that stands alone (a partner MCP with no back-office).
+  clientId            String?
+  application         OauthClient?  @relation("ApplicationResources", fields: [clientId], references: [clientId], onDelete: SetNull)
   registeredAt        DateTime      @default(now())
   lastSeenAt          DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
@@ -308,6 +312,8 @@ model OauthClient {
   oauthrefreshtokens               OauthRefreshToken[]
   oauthaccesstokens                OauthAccessToken[]
   oauthconsents                    OauthConsent[]
+  /// MCP channels of the same product.
+  resources                        Mcp[]                 @relation("ApplicationResources")
 
   @@unique([clientId])
   @@index([userId])

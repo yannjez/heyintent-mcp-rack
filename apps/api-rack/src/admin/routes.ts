@@ -1,4 +1,10 @@
-import { ACCESS_LEVELS, CLIENT_KINDS, isClientKind, USER_KINDS } from "@rack/mcp-kit";
+import {
+  type Access,
+  ACCESS_LEVELS,
+  CLIENT_KINDS,
+  isClientKind,
+  USER_KINDS,
+} from "@rack/mcp-kit";
 import type { Db } from "@rack/database";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -13,7 +19,7 @@ import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
 import { presentKey } from "../keys/routes.js";
 import type { McpNotifier } from "../mcp/notifier.js";
-import { type McpRegistry, RegistryError } from "../mcp/registry.js";
+import { type McpListing, type McpRegistry, RegistryError } from "../mcp/registry.js";
 import {
   parseResourceConfig,
   probeResource,
@@ -36,6 +42,8 @@ const patchMcpSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   description: z.string().trim().max(500).optional(),
   config: z.record(z.string(), z.unknown()).optional(),
+  /** Application this resource is a channel of; null detaches it. */
+  clientId: z.string().min(1).max(255).nullable().optional(),
 });
 
 const SLUG = /^[a-z0-9][a-z0-9-]{1,62}$/;
@@ -205,19 +213,25 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     ]);
     return mcps
       .filter((mcp) => mcp.enabled && mcp.loaded && accesses[mcp.slug])
-      .map((mcp) => ({
-        slug: mcp.slug,
-        name: mcp.name,
-        description: mcp.description,
-        category: mcp.category,
-        version: mcp.version,
-        kind: mcp.kind,
-        access: accesses[mcp.slug],
-        tools: mcp.tools,
-        url: mcpUrl(mcp),
-        appUrl: mcp.externalUrl,
-      }));
+      .map((mcp) => presentUserMcp(mcp, accesses[mcp.slug]!));
   });
+
+  /** One MCP as the personal space shows it, with this user's access level. */
+  function presentUserMcp(mcp: McpListing, access: Access) {
+    return {
+      slug: mcp.slug,
+      name: mcp.name,
+      description: mcp.description,
+      category: mcp.category,
+      version: mcp.version,
+      kind: mcp.kind,
+      access,
+      tools: mcp.tools,
+      url: mcpUrl(mcp),
+      appUrl: mcp.externalUrl,
+      clientId: mcp.clientId,
+    };
+  }
 
   /** Applications available to the signed-in user; never expose OAuth credentials. */
   app.get("/api/applications", async (request, reply) => {
@@ -239,6 +253,16 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
       },
     });
+    // A product is one application plus the MCP channels attached to it. The
+    // two carry their own access rules, so a user may see the back-office and
+    // not the MCP, or the reverse — each side is filtered on its own.
+    const [mcps, accesses] = await Promise.all([
+      deps.registry.list(),
+      deps.registry.userAccesses(user.id, user.isAdmin),
+    ]);
+    const reachable = mcps.filter(
+      (mcp) => mcp.enabled && mcp.loaded && accesses[mcp.slug],
+    );
     return clients
       .filter(
         (client) =>
@@ -248,6 +272,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         clientId,
         name,
         url: publicUrl(uri),
+        resources: reachable
+          .filter((mcp) => mcp.clientId === clientId)
+          .map((mcp) => presentUserMcp(mcp, accesses[mcp.slug]!)),
       }));
   });
 
@@ -529,17 +556,23 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   app.get("/api/admin/mcps", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const [mcps, links] = await Promise.all([
+    const [mcps, links, applications] = await Promise.all([
       deps.registry.list(),
       deps.db.mcpGroupMcp.findMany({
         include: { group: { include: { users: { select: { userId: true } } } } },
       }),
+      deps.db.oauthClient.findMany({
+        where: { kind: "application" },
+        select: { clientId: true, name: true },
+      }),
     ]);
+    const nameOf = new Map(applications.map((app) => [app.clientId, app.name]));
     return mcps.map((mcp) => {
       const groups = links.filter((link) => link.mcpId === mcp.id);
       return {
         ...mcp,
         url: mcpUrl(mcp),
+        applicationName: mcp.clientId ? (nameOf.get(mcp.clientId) ?? null) : null,
         userCount: new Set(
           groups.flatMap((link) => link.group.users.map((u) => u.userId)),
         ).size,
@@ -560,9 +593,16 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     ]);
     const mcp = mcps.find((m) => m.slug === slug);
     if (!mcp) return null;
+    const application = mcp.clientId
+      ? await deps.db.oauthClient.findUnique({
+          where: { clientId: mcp.clientId },
+          select: { name: true },
+        })
+      : null;
     return {
       ...mcp,
       url: mcpUrl(mcp),
+      applicationName: application?.name ?? null,
       userCount: new Set(links.flatMap((link) => link.group.users.map((u) => u.userId)))
         .size,
       groupCount: links.length,
@@ -609,11 +649,22 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const record = await deps.db.mcp.findUnique({ where: { slug } });
       if (!record) return jsonError(reply, 404, "Unknown MCP");
 
-      const { enabled, name, description, config } = parsed.data;
+      const { enabled, name, description, config, clientId } = parsed.data;
       const kind = deps.registry.kind(slug) ?? "package";
       const editsResource = name !== undefined || description !== undefined || !!config;
       if (kind === "package" && editsResource) {
         return jsonError(reply, 400, "Packages shipped with the rack cannot be edited");
+      }
+      // Only a declared application can own a channel: attaching a resource to
+      // an agent that registered itself would make no sense as a product.
+      if (clientId) {
+        const owner = await deps.db.oauthClient.findUnique({
+          where: { clientId },
+          select: { kind: true },
+        });
+        if (!owner) return jsonError(reply, 404, "Unknown application");
+        if (owner.kind !== "application")
+          return jsonError(reply, 400, "Only an application can own a resource");
       }
       // Validate the whole patch before touching anything: a rejected request
       // must leave the resource exactly as it was, `enabled` included.
@@ -628,6 +679,10 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         // A disabled MCP answers 404; connected clients should stop offering
         // its tools without waiting for the next call to fail.
         deps.notifier.toolsChanged([slug]);
+      }
+      // Attaching is pure bookkeeping: the resource keeps its own access rules.
+      if (clientId !== undefined && clientId !== record.clientId) {
+        await deps.db.mcp.update({ where: { slug }, data: { clientId } });
       }
       if (kind !== "package" && editsResource) {
         try {

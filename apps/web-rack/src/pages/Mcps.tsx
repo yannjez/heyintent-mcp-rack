@@ -212,59 +212,9 @@ export function McpsPage({ me, showWelcome = true }: { me: Me; showWelcome?: boo
         </div>
       )}
       <div className="grid">
-        {mcps?.map((mcp) => {
-          const reads = mcp.tools.filter((t) => !t.write);
-          const writes = mcp.tools.filter((t) => t.write);
-          const visible = mcp.access === "write" ? mcp.tools : reads;
-          return (
-            <article className="card mcp-card" key={mcp.slug}>
-              <div className="card-body">
-                <div className="mcp-title">
-                  <McpIcon slug={mcp.slug} kind={mcp.kind} />
-                  <div className="names">
-                    <div className="category">
-                      {mcp.category ?? "MCP"} · v{mcp.version}
-                    </div>
-                    <h3>{mcp.name}</h3>
-                  </div>
-                  <AccessBadge access={mcp.access} />
-                </div>
-                <p className="mcp-desc">{mcp.description}</p>
-                <details className="tools">
-                  <summary>
-                    {visible.length} outil{visible.length > 1 ? "s" : ""}
-                    <span className="faint" style={{ fontWeight: 500 }}>
-                      · {reads.length} lecture
-                      {mcp.access === "write"
-                        ? ` · ${writes.length} écriture`
-                        : writes.length > 0
-                          ? ` · ${writes.length} écriture masqué${writes.length > 1 ? "s" : ""}`
-                          : ""}
-                    </span>
-                  </summary>
-                  <ul className="tool-list">
-                    {visible.map((tool) => (
-                      <li key={tool.name}>
-                        <span className={`name ${tool.write ? "write" : ""}`}>
-                          {tool.name}
-                        </span>
-                        <span className="desc">{tool.description}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              </div>
-              <div className="card-foot">
-                <div className="url-line" style={{ flex: 1 }}>
-                  <span>{mcp.url}</span>
-                </div>
-                <button className="btn small" onClick={() => setConnecting(mcp)}>
-                  <Icon name="plug" /> Connecter
-                </button>
-              </div>
-            </article>
-          );
-        })}
+        {mcps?.map((mcp) => (
+          <McpCard key={mcp.slug} mcp={mcp} onConnect={() => setConnecting(mcp)} />
+        ))}
       </div>
       {connecting && (
         <ConnectModal mcp={connecting} onClose={() => setConnecting(null)} />
@@ -272,3 +222,58 @@ export function McpsPage({ me, showWelcome = true }: { me: Me; showWelcome?: boo
     </>
   );
 }
+
+/** One MCP resource, as the personal space shows it. Shared with « Mes produits ». */
+export function McpCard({ mcp, onConnect }: { mcp: UserMcp; onConnect: () => void }) {
+  const reads = mcp.tools.filter((t) => !t.write);
+  const writes = mcp.tools.filter((t) => t.write);
+  const visible = mcp.access === "write" ? mcp.tools : reads;
+  return (
+    <article className="card mcp-card">
+      <div className="card-body">
+        <div className="mcp-title">
+          <McpIcon slug={mcp.slug} kind={mcp.kind} />
+          <div className="names">
+            <div className="category">
+              {mcp.category ?? "MCP"} · v{mcp.version}
+            </div>
+            <h3>{mcp.name}</h3>
+          </div>
+          <AccessBadge access={mcp.access} />
+        </div>
+        <p className="mcp-desc">{mcp.description}</p>
+        <details className="tools">
+          <summary>
+            {visible.length} outil{visible.length > 1 ? "s" : ""}
+            <span className="faint" style={{ fontWeight: 500 }}>
+              · {reads.length} lecture
+              {mcp.access === "write"
+                ? ` · ${writes.length} écriture`
+                : writes.length > 0
+                  ? ` · ${writes.length} écriture masqué${writes.length > 1 ? "s" : ""}`
+                  : ""}
+            </span>
+          </summary>
+          <ul className="tool-list">
+            {visible.map((tool) => (
+              <li key={tool.name}>
+                <span className={`name ${tool.write ? "write" : ""}`}>{tool.name}</span>
+                <span className="desc">{tool.description}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      </div>
+      <div className="card-foot">
+        <div className="url-line" style={{ flex: 1 }}>
+          <span>{mcp.url}</span>
+        </div>
+        <button className="btn small" onClick={onConnect}>
+          <Icon name="plug" /> Connecter
+        </button>
+      </div>
+    </article>
+  );
+}
+
+export { ConnectModal };

@@ -21,7 +21,12 @@ const BASE_GROUP = "vitest-base-group";
 const RESOURCE_SLUGS = ["vitest-site", "vitest-remote", "vitest-partner"];
 const EARLY_CLIENT = "Vitest early client";
 const EARLY_REDIRECT = "http://127.0.0.1:9/callback";
-const CLIENT_NAMES = [EARLY_CLIENT, "Vitest agent", "Vitest declared app"];
+const CLIENT_NAMES = [
+  EARLY_CLIENT,
+  "Vitest agent",
+  "Vitest declared app",
+  "Vitest product app",
+];
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -1121,4 +1126,73 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
       "application",
     );
   });
+
+  it("groups a resource under the application it is a channel of", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const create = await fetch(`${baseUrl}/api/admin/applications`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Vitest product app",
+        uri: "https://product.vitest.example",
+        redirectUris: ["https://product.vitest.example/callback"],
+      }),
+    });
+    const product = (await create.json()) as { clientId: string };
+    expect(create.status, JSON.stringify(product)).toBe(201);
+
+    // Standalone until attached.
+    const before = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; resources: Array<{ slug: string }> }>;
+    expect(before.find((a) => a.clientId === product.clientId)?.resources).toHaveLength(
+      0,
+    );
+
+    const attach = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ clientId: product.clientId }),
+    });
+    expect(attach.status).toBe(200);
+    expect((await attach.json()).applicationName).toBe("Vitest product app");
+
+    const after = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; resources: Array<{ slug: string }> }>;
+    expect(
+      after.find((a) => a.clientId === product.clientId)?.resources.map((r) => r.slug),
+    ).toEqual(["vitest-remote"]);
+
+    // An agent is not a product: it cannot own a channel.
+    const agent = await deps_consumerClientId(db);
+    if (agent) {
+      const refused = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ clientId: agent }),
+      });
+      expect(refused.status).toBe(400);
+    }
+
+    // Detaching leaves the resource alone, and deleting the application too.
+    await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ clientId: null }),
+    });
+    await db.oauthClient.deleteMany({ where: { clientId: product.clientId } });
+    expect(
+      await db.mcp.findUniqueOrThrow({ where: { slug: "vitest-remote" } }),
+    ).toMatchObject({ clientId: null });
+  });
 });
+
+/** A consumer client id to prove an agent cannot own a resource, if one exists. */
+async function deps_consumerClientId(db: ReturnType<typeof createPrismaClient>) {
+  const consumer = await db.oauthClient.findFirst({
+    where: { kind: "consumer" },
+    select: { clientId: true },
+  });
+  return consumer?.clientId ?? null;
+}

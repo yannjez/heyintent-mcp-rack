@@ -59,6 +59,8 @@ export interface McpListing {
   configuredSettings: string[];
   /** Origin of an MCP hosted outside the rack (EXTERNAL_MCPS), null for the rack's own. */
   externalUrl: string | null;
+  /** The application this resource is a channel of; null when it stands alone. */
+  clientId: string | null;
   registeredAt: Date;
   lastSeenAt: Date;
 }
@@ -341,6 +343,7 @@ export class McpRegistry {
         settingsSpec: definition?.settings ?? [],
         configuredSettings: Object.keys(settings).filter((key) => settings[key]),
         externalUrl: definition?.external?.url ?? null,
+        clientId: record.clientId,
         registeredAt: record.registeredAt,
         lastSeenAt: record.lastSeenAt,
       };

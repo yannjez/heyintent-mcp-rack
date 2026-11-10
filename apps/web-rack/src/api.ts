@@ -123,6 +123,8 @@ export interface UserMcp {
   url: string;
   /** UI of an external application, null for MCPs served by the rack. */
   appUrl: string | null;
+  /** The application this resource is a channel of; null when it stands alone. */
+  clientId: string | null;
 }
 
 export interface AdminMcp {
@@ -143,6 +145,9 @@ export interface AdminMcp {
   tools: ToolInfo[];
   settingsSpec: SettingSpec[];
   configuredSettings: string[];
+  /** The application this resource is a channel of; null when it stands alone. */
+  clientId: string | null;
+  applicationName: string | null;
   userCount: number;
   groupCount: number;
   groups: Array<{ id: string; name: string }>;
@@ -299,9 +304,14 @@ export interface UserApplication {
   clientId: string;
   name: string | null;
   url: string | null;
+  /** MCP channels of the same product this account may reach. */
+  resources: UserMcp[];
 }
 
-export interface UserConsumer extends UserApplication {
+export interface UserConsumer {
+  clientId: string;
+  name: string | null;
+  url: string | null;
   /** When this account last granted it access. */
   connectedAt: string;
 }
