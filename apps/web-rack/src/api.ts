@@ -315,6 +315,8 @@ export interface ConsumerGrant {
   kind: McpKind;
   /** The consumer's OAuth clients holding this authorization. */
   clientIds: string[];
+  /** Names the account gave these connections when authorizing them. */
+  labels: string[];
   /** Level in force; null when the account itself lost the MCP. */
   access: Access | null;
   /** Highest level it can be set to without a new authorization. */

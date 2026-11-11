@@ -143,25 +143,26 @@ export function ConsumersPage() {
                               ? "Autorisé en lecture seule"
                               : "Autorisé en lecture et écriture"
                             : "Vous n'avez plus accès à cette ressource"}
+                          {grant.labels.length > 0 && ` · ${grant.labels.join(", ")}`}
                         </span>
                       </div>
-                      {grant.max ? (
+                      {/* Without access of their own, the only move left is to withdraw. */}
+                      {grant.max && (
                         <AccessPicker
                           value={grant.access}
                           max={grant.max}
+                          allowNone={false}
                           disabled={busy}
                           onChange={(next) => setLevel(consumer, grant, next)}
                         />
-                      ) : (
-                        // Without access of their own, the only move left is to withdraw.
-                        <button
-                          className="btn small ghost"
-                          disabled={busy}
-                          onClick={() => setLevel(consumer, grant, null)}
-                        >
-                          Retirer
-                        </button>
                       )}
+                      <button
+                        className="btn small ghost"
+                        disabled={busy}
+                        onClick={() => setLevel(consumer, grant, null)}
+                      >
+                        Retirer
+                      </button>
                     </div>
                   ))}
                 </div>

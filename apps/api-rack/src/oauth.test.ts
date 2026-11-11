@@ -276,6 +276,35 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     expect(mine?.grants).toEqual([
       expect.objectContaining({ slug: "sample", access: "read", max: "read" }),
     ]);
+    // Filed as an application (an agent whose metadata publishes an address),
+    // it still holds a right on this account: it stays listed, and revocable.
+    await db.oauthClient.update({
+      where: { clientId: client.client_id },
+      data: { kind: "application" },
+    });
+    const filed = (await consumers()).find((c) => c.clientIds.includes(client.client_id));
+    expect(filed?.grants).toEqual([
+      expect.objectContaining({ slug: "sample", access: "read" }),
+    ]);
+    await db.oauthClient.update({
+      where: { clientId: client.client_id },
+      data: { kind: "consumer" },
+    });
+    // The account names the connection: the rack cannot know which account
+    // is signed in on the client's side, the user does.
+    const named = await fetch(`${baseUrl}/api/consumers/label`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        clientIds: [client.client_id],
+        slugs: ["sample"],
+        label: "  Vitest, portable perso  ",
+      }),
+    });
+    expect(named.status, await named.text()).toBe(200);
+    expect(
+      (await consumers()).find((c) => c.clientIds.includes(client.client_id))?.grants[0],
+    ).toMatchObject({ slug: "sample", labels: ["Vitest, portable perso"] });
     const call = () =>
       fetch(`${baseUrl}/mcp/sample`, {
         method: "POST",

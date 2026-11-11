@@ -182,7 +182,13 @@ Trois collections, qu'il ne faut pas confondre :
   l'agent. Ces droits vivent dans la table `mcp_grants` (client, compte, MCP, niveau), écrite à
   l'acceptation du consentement et **relue à chaque appel MCP** : une coupure s'applique à l'appel
   suivant, sans attendre l'expiration du jeton. Un agent qui s'enregistre en DCR crée un client
-  par MCP connecté ; les clients de même nom sont regroupés sur une seule carte.
+  par MCP connecté ; les clients de même nom sont regroupés sur une seule carte. Tout client qui
+  détient un droit sur un MCP du compte y figure, **même classé application** : un agent dont
+  les métadonnées publient une adresse (Codex, ChatGPT) a pu être classé ainsi, et ses droits
+  doivent rester visibles et coupables. Un client OAuth ne dit jamais au rack quel compte est
+  connecté de son côté : l'écran de consentement affiche donc en évidence le compte Rack qui
+  approuve, avec un lien pour en changer, et propose de **nommer la connexion** (« Codex,
+  portable perso ») ; ce nom est repris dans « Mes consommateurs ».
 - une **ressource** est un MCP servi sur `/mcp/<slug>` : un package, un **site** (contenu exposé
   en tools via le package `site-public`) ou un **MCP distant** relayé. Attention : le kind
   « site » est une ressource MCP, pas une application web — pour déclarer un produit, c'est

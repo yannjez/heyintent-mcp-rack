@@ -1652,6 +1652,25 @@ td .secondary {
   width: 100%;
   max-width: 640px;
 }
+.consent-account {
+  align-items: center;
+  color: var(--ink);
+}
+.consent-account > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--accent);
+}
+.consent-account > div {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.consent-account > .btn {
+  flex: none;
+  width: auto;
+}
 .consent-card .stack > * {
   min-width: 0;
 }
