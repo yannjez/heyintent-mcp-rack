@@ -187,8 +187,9 @@ function ApplicationEditor({
           </code>
         ))}
         <p className="small muted">
-          Enregistrer supprime les consentements et les jetons de renouvellement. Les
-          accès retirés sont bloqués par Rack.
+          Changer qui peut se connecter (réglage ou groupes) supprime les consentements,
+          les jetons et les droits accordés à ce client : les comptes devront l’autoriser
+          de nouveau. Renommer ou changer le type ne supprime rien.
         </p>
         <button type="submit" className="btn accent" disabled={busy}>
           {busy ? "Enregistrement…" : "Enregistrer"}

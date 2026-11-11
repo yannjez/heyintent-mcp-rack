@@ -90,6 +90,7 @@ export function ConsentPage() {
   const [accepted, setAccepted] = useState<Set<string>>(new Set(asked));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [label, setLabel] = useState("");
 
   useEffect(() => {
     setApplicationAllowed(null);
@@ -159,6 +160,15 @@ export function ConsentPage() {
           setError("L’autorisation n’a pas pu aboutir. Reprenez la connexion.");
           return;
         }
+        // The grants exist by now: name them as the user asked. The
+        // authorization stands whether or not the name could be saved.
+        const slugs = available.filter((g) => levelOf(g)).map((g) => g.slug);
+        if (accept && clientId && label.trim() && slugs.length > 0) {
+          await api("/api/consumers/label", {
+            method: "PUT",
+            body: JSON.stringify({ clientIds: [clientId], slugs, label }),
+          }).catch(() => undefined);
+        }
         if (accept && !identityOnly) await finishOAuth(next.url, clientId);
         else window.location.href = next.url;
         return;
@@ -174,6 +184,17 @@ export function ConsentPage() {
           "Impossible de joindre le serveur. Réessayez dans un instant.",
         ),
       );
+    }
+  }
+
+  /** Sign out and run the same request again, to approve it as someone else. */
+  async function switchAccount() {
+    if (!restartPath) return;
+    setBusy(true);
+    try {
+      await authClient.signOut();
+    } finally {
+      window.location.href = restartPath;
     }
   }
 
@@ -243,10 +264,6 @@ export function ConsentPage() {
         </p>
         <ul className="consent-facts">
           <li>
-            <Icon name="users" />
-            Connecté en tant que {me.name || me.email}
-          </li>
-          <li>
             <Icon name="key" />
             {identityOnly
               ? "Connexion avec votre compte Rack"
@@ -268,6 +285,27 @@ export function ConsentPage() {
           </div>
         </div>
         <div className="card-body stack">
+          {/* The client never says who is signed in on its side: what counts
+              is the rack account approving, so it cannot be missed. */}
+          <div className="alert consent-account">
+            <Icon name="users" />
+            <div>
+              {identityOnly
+                ? "Vous vous connectez avec le compte Rack "
+                : "Vous donnez cet accès au nom du compte Rack "}
+              <strong>{me.email}</strong>.
+            </div>
+            {restartPath && (
+              <button
+                type="button"
+                className="btn small ghost"
+                disabled={busy}
+                onClick={switchAccount}
+              >
+                Changer de compte
+              </button>
+            )}
+          </div>
           {error && (
             <div className="alert error" role="alert">
               {error}
@@ -343,6 +381,23 @@ export function ConsentPage() {
                 })}
               </div>
             ))}
+
+          {hasMcpScopes && available.length > 0 && (
+            <label className="field">
+              Nom de cette connexion (facultatif)
+              <input
+                type="text"
+                maxLength={80}
+                value={label}
+                placeholder="Ex. Codex, portable perso"
+                onChange={(event) => setLabel(event.target.value)}
+              />
+              <span className="hint">
+                Affiché dans « Mes consommateurs », pour reconnaître cette connexion plus
+                tard.
+              </span>
+            </label>
+          )}
 
           {mcps !== null && unavailable.length > 0 && (
             <div className="tiny muted">

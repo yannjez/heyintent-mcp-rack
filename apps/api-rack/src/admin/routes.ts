@@ -293,6 +293,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
    * signed in through it: an agent registers itself, unrestricted, so the
    * group policy would otherwise show everyone's agents to everyone. The
    * consent row is the link, and it is also what the user would revoke.
+   *
+   * A client that holds a right on an MCP of this account is listed whatever
+   * its kind: an agent whose metadata publishes an address may have been
+   * filed as an application, and what it may do in the user's name has to
+   * stay visible and revocable all the same. That holds when the client is
+   * disabled or closed to this account's groups: the right would work again
+   * the day the policy changes, so it is listed, flagged as blocked.
    */
   app.get("/api/consumers", async (request, reply) => {
     const user = await currentUser(request);
@@ -304,12 +311,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         select: { clientId: true, updatedAt: true },
       }),
       deps.db.mcpGrant.findMany({
-        where: { userId: user.id, client: { kind: "consumer" } },
+        where: { userId: user.id },
         orderBy: { mcp: { name: "asc" } },
         select: {
           clientId: true,
           access: true,
           consentedAccess: true,
+          label: true,
           updatedAt: true,
           mcp: { select: { slug: true, name: true, kind: true, enabled: true } },
         },
@@ -326,6 +334,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         clientId: true,
         name: true,
         uri: true,
+        kind: true,
         disabled: true,
         accessRestricted: true,
         applicationGroups: {
@@ -334,13 +343,19 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
       },
     });
+    const granted = new Set(grants.map((grant) => grant.clientId));
 
     // An agent that registers itself gets one client per MCP it connects to:
     // the same name is the same agent, shown once with everything it holds.
+    // Only such agents are merged. A declared application stands alone even
+    // when it bears the same name: one card must never disconnect two
+    // unrelated clients.
     interface Consumer {
       name: string | null;
       url: string | null;
       clientIds: string[];
+      /** No client of this card may be used by the account right now. */
+      blocked: boolean;
       connectedAt: Date;
       grants: Map<
         string,
@@ -351,23 +366,33 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           access: Access | null;
           consented: Access | null;
           clientIds: string[];
+          labels: string[];
         }
       >;
     }
     const consumers = new Map<string, Consumer>();
     const byClient = new Map<string, Consumer>();
     for (const client of clients) {
-      if (isRackApplication(client, deps.baseUrl) || !applicationAllowed(client))
-        continue;
-      const key = client.name?.trim().toLowerCase() || client.clientId;
+      if (isRackApplication(client, deps.baseUrl)) continue;
+      const allowed = applicationAllowed(client);
+      // Without a right there is nothing to show of a client the account
+      // may not use; with one, it stays in sight.
+      if (!allowed && !granted.has(client.clientId)) continue;
+      const name = client.name?.trim().toLowerCase();
+      const key =
+        client.kind === "consumer" && name
+          ? `agent ${name}`
+          : `client ${client.clientId}`;
       const consumer: Consumer = consumers.get(key) ?? {
         name: client.name,
         url: publicUrl(client.uri),
         clientIds: [],
+        blocked: true,
         connectedAt: new Date(0),
         grants: new Map(),
       };
       consumer.url ??= publicUrl(client.uri);
+      consumer.blocked &&= !allowed;
       consumer.clientIds.push(client.clientId);
       consumers.set(key, consumer);
       byClient.set(client.clientId, consumer);
@@ -388,10 +413,14 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         access: null,
         consented: null,
         clientIds: [],
+        labels: [],
       };
       entry.access = maxAccess(entry.access, toAccess(grant.access));
       entry.consented = maxAccess(entry.consented, toAccess(grant.consentedAccess));
       entry.clientIds.push(grant.clientId);
+      if (grant.label && !entry.labels.includes(grant.label)) {
+        entry.labels.push(grant.label);
+      }
       consumer.grants.set(grant.mcp.slug, entry);
     }
     return [...consumers.values()]
@@ -400,6 +429,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         name: consumer.name,
         url: consumer.url,
         clientIds: consumer.clientIds,
+        blocked: consumer.blocked,
         connectedAt: consumer.connectedAt,
         grants: [...consumer.grants.values()].map((grant) => {
           // What the account itself may do today caps everything it granted.
@@ -409,6 +439,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
             name: grant.name,
             kind: grant.kind,
             clientIds: grant.clientIds,
+            /** Names the account gave these connections, if any. */
+            labels: grant.labels,
             /** Level in force; null when the account lost the MCP itself. */
             access: minAccess(grant.access, own),
             /** Highest level it can be set to without a new authorization. */
@@ -475,6 +507,35 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     );
     deps.notifier.toolsChanged([slug]);
     return { slug, access, updated: rows.length };
+  });
+
+  /**
+   * Name a connection, as the account wants to recognise it later. The rack
+   * cannot know which account is signed in on the client's side; the user
+   * does. An empty name removes it.
+   */
+  app.put("/api/consumers/label", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    const parsed = z
+      .strictObject({
+        clientIds: consumerClientsSchema,
+        slugs: z.array(z.string().min(1).max(63)).min(1).max(100),
+        label: z.string().max(80),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { clientIds, slugs } = parsed.data;
+    const label = parsed.data.label.trim();
+    const { count } = await deps.db.mcpGrant.updateMany({
+      where: {
+        userId: user.id,
+        clientId: { in: clientIds },
+        mcp: { slug: { in: slugs } },
+      },
+      data: { label: label || null },
+    });
+    return { updated: count };
   });
 
   /** Withdraw everything this account granted these consumers. */

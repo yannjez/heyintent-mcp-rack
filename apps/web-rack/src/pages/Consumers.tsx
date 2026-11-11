@@ -122,6 +122,13 @@ export function ConsumersPage() {
               </button>
             </div>
             <div className="card-body stack">
+              {consumer.blocked && (
+                <div className="alert small">
+                  Ce client est désactivé ou fermé à vos groupes : il ne peut rien appeler
+                  pour l’instant. Ses autorisations restent enregistrées et reprendraient
+                  effet ; retirez-les si vous ne les voulez plus.
+                </div>
+              )}
               {consumer.grants.length === 0 ? (
                 <p className="small muted" style={{ margin: 0 }}>
                   Aucune ressource autorisée : ce consommateur ne peut rien appeler en
@@ -143,25 +150,26 @@ export function ConsumersPage() {
                               ? "Autorisé en lecture seule"
                               : "Autorisé en lecture et écriture"
                             : "Vous n'avez plus accès à cette ressource"}
+                          {grant.labels.length > 0 && ` · ${grant.labels.join(", ")}`}
                         </span>
                       </div>
-                      {grant.max ? (
+                      {/* Without access of their own, the only move left is to withdraw. */}
+                      {grant.max && (
                         <AccessPicker
                           value={grant.access}
                           max={grant.max}
+                          allowNone={false}
                           disabled={busy}
                           onChange={(next) => setLevel(consumer, grant, next)}
                         />
-                      ) : (
-                        // Without access of their own, the only move left is to withdraw.
-                        <button
-                          className="btn small ghost"
-                          disabled={busy}
-                          onClick={() => setLevel(consumer, grant, null)}
-                        >
-                          Retirer
-                        </button>
                       )}
+                      <button
+                        className="btn small ghost"
+                        disabled={busy}
+                        onClick={() => setLevel(consumer, grant, null)}
+                      >
+                        Retirer
+                      </button>
                     </div>
                   ))}
                 </div>

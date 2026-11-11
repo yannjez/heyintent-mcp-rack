@@ -315,6 +315,8 @@ export interface ConsumerGrant {
   kind: McpKind;
   /** The consumer's OAuth clients holding this authorization. */
   clientIds: string[];
+  /** Names the account gave these connections when authorizing them. */
+  labels: string[];
   /** Level in force; null when the account itself lost the MCP. */
   access: Access | null;
   /** Highest level it can be set to without a new authorization. */
@@ -329,6 +331,11 @@ export interface UserConsumer {
   name: string | null;
   url: string | null;
   clientIds: string[];
+  /**
+   * Disabled, or closed to this account's groups: it cannot be used for now,
+   * but what it was granted is kept and would work again.
+   */
+  blocked: boolean;
   /** When this account last granted it access. */
   connectedAt: string;
   grants: ConsumerGrant[];

@@ -125,6 +125,9 @@ model McpGrant {
   /// Level accepted on the consent screen: the ceiling `access` may return to
   /// without a new authorization.
   consentedAccess String
+  /// Name the user gave this connection ("Codex, portable perso"): the rack
+  /// never learns which account is signed in on the client's side.
+  label           String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
