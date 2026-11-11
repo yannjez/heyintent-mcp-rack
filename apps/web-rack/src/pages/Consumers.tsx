@@ -76,7 +76,7 @@ export function ConsumersPage() {
     <section className="personal-section" aria-label="Mes consommateurs">
       <PageHead
         title="Mes consommateurs"
-        lead="Les agents que vous avez connectés à votre compte Rack, et ce que chacun peut utiliser en votre nom. Un changement s'applique à son prochain appel."
+        lead="Les agents que vous avez connectés à votre compte Rack, et ce que chacun peut utiliser en votre nom. Un changement s'applique à son prochain appel, ou sous 15 minutes pour une application hébergée hors du rack."
       />
       {error && <div className="alert error">{error}</div>}
       {!consumers && !error && <p className="muted">Chargement des consommateurs…</p>}

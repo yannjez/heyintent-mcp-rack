@@ -47,8 +47,11 @@ export interface AuthInput {
     clientId: string;
     scopes: string[];
   }) => Promise<void>;
-  /** Current MCP access of a user, embedded in access tokens as `mcp_access`. */
-  mcpAccesses?: (userId: string) => Promise<Record<string, Access>>;
+  /**
+   * What this client may currently do for a user, MCP by MCP: the ceiling of
+   * the `mcp_access` claim embedded in the access tokens it is issued.
+   */
+  mcpAccesses?: (userId: string, clientId: string) => Promise<Record<string, Access>>;
 }
 
 export function mcpResource(baseUrl: string) {
@@ -244,19 +247,21 @@ export function createAuth(db: Db | object, input: AuthInput) {
                 await assertApplicationAccess(user.id, clientId);
                 return {};
               },
+              // External apps cannot ask the rack who may use them: tell them
+              // in the token. Computed on every issuance, refreshes included,
+              // so a level the account lowered is gone from the next token.
+              accessToken: async ({ user, client, scopes: granted }) => {
+                if (!user || !input.mcpAccesses) return {};
+                if (!granted.some((scope) => parseMcpScope(scope))) return {};
+                const allowed = await input.mcpAccesses(user.id, client.clientId);
+                return { mcp_access: grantedMcpAccess(granted, allowed) };
+              },
             },
           },
         ],
         customTokenResponseFields: async ({ user }) => {
           if (user) await assertApplicationAccess(user.id);
           return {};
-        },
-        // External apps cannot ask the rack who may use them: tell them in the token.
-        async customAccessTokenClaims({ user, scopes: granted }) {
-          if (!user || !input.mcpAccesses) return {};
-          if (!granted.some((scope) => parseMcpScope(scope))) return {};
-          const mcpAccess = grantedMcpAccess(granted, await input.mcpAccesses(user.id));
-          return { mcp_access: mcpAccess };
         },
       }),
       cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),

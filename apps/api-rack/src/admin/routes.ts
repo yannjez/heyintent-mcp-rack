@@ -423,8 +423,10 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
   /**
    * Change what a consumer may do on one MCP: lower or restore the level
    * within what was consented, or "none" to withdraw the MCP. Effective on the
-   * consumer's very next call; a withdrawal also drops its refresh tokens, so
-   * coming back means going through the consent screen again.
+   * consumer's very next call to the rack; an app hosted elsewhere reads the
+   * level from its token, so it follows at the next issuance (15 minutes at
+   * most). A withdrawal also drops the refresh tokens, so coming back means
+   * going through the consent screen again.
    */
   app.put("/api/consumers/grants", async (request, reply) => {
     const user = await currentUser(request);

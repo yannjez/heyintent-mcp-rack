@@ -266,7 +266,10 @@ au rack. On la déclare dans `EXTERNAL_MCPS` (tableau JSON `slug`, `name`, `url`
   nouveaux à l'enregistrement (`clientRegistrationDefaultResources`, CIMD compris), ceux qui
   existaient déjà au démarrage du rack ;
 - ajoute aux access tokens la claim `mcp_access` (`{"<slug>": "read" | "write"}`) : les scopes
-  demandés, plafonnés par l'accès de l'utilisateur dans le rack.
+  demandés, plafonnés par l'accès de l'utilisateur dans le rack et par le niveau que le compte
+  a laissé à ce client dans « Mes consommateurs ». La claim est recalculée à chaque émission,
+  rafraîchissement compris : un niveau baissé vaut dès le jeton suivant, donc au plus tard
+  15 minutes après (un JWT déjà émis ne se révoque pas).
 
 L'application vérifie elle-même le JWT avec la JWKS du rack (`iss` = `<BETTER_AUTH_URL>/api/auth`,
 `aud` = sa propre ressource) puis lit `mcp_access`. Le rack ne sert pas de route

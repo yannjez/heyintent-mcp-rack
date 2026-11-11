@@ -70,6 +70,38 @@ export async function recordConsent(
   return mcps.map((mcp) => mcp.slug);
 }
 
+/** Level this account currently lets a client use, per MCP slug it was granted. */
+export async function grantLevels(
+  db: Db,
+  input: { userId: string; clientId: string },
+): Promise<Record<string, Access>> {
+  const grants = await db.mcpGrant.findMany({
+    where: input,
+    select: { access: true, mcp: { select: { slug: true } } },
+  });
+  return Object.fromEntries(
+    grants.map((grant) => [grant.mcp.slug, grant.access === "write" ? "write" : "read"]),
+  );
+}
+
+/**
+ * Lower each access to the level granted to the client. An MCP without a
+ * grant is left untouched: the grant can only lower, and whether a client may
+ * hold a token at all is decided by the provider's consent, which a withdrawal
+ * deletes along with the refresh tokens.
+ */
+export function capByGrants(
+  accesses: Record<string, Access>,
+  levels: Record<string, Access>,
+): Record<string, Access> {
+  return Object.fromEntries(
+    Object.entries(accesses).map(([slug, access]) => [
+      slug,
+      levels[slug] === "read" ? "read" : access,
+    ]),
+  );
+}
+
 /**
  * Forget what the provider remembers of these clients for this account, so
  * the next authorization shows the consent screen again and no refresh token

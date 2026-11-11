@@ -20,7 +20,12 @@ import {
   mcpResource,
 } from "./auth/auth.js";
 import { createOtpSender, type OtpSender } from "./auth/email.js";
-import { mcpResourceIdentifier, recordConsent } from "./auth/grants.js";
+import {
+  capByGrants,
+  grantLevels,
+  mcpResourceIdentifier,
+  recordConsent,
+} from "./auth/grants.js";
 import type { Env } from "./env.js";
 import { sendWebResponse, toWebRequest } from "./http.js";
 import { McpNotifier } from "./mcp/notifier.js";
@@ -92,17 +97,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       onConsent: async (consent) => {
         notifier.toolsChanged(await recordConsent(db, consent));
       },
-      // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
-      mcpAccesses: async (userId) => {
-        const [accesses, enabled] = await Promise.all([
+      // A disabled MCP grants nothing, and the level the account set for this
+      // client applies, as on the rack's own /mcp/:slug route.
+      mcpAccesses: async (userId, clientId) => {
+        const [accesses, enabled, levels] = await Promise.all([
           registry.userAccesses(userId),
           db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
+          grantLevels(db, { userId, clientId }),
         ]);
         const slugs = new Set(enabled.map((mcp) => mcp.slug));
         for (const slug of Object.keys(accesses)) {
           if (!slugs.has(slug)) delete accesses[slug];
         }
-        return accesses;
+        return capByGrants(accesses, levels);
       },
       extraScopes: [...scopes],
     });

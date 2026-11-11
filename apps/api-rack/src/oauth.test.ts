@@ -356,6 +356,109 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     expect(revoked.status).toBe(403);
   });
 
+  it("caps the mcp_access claim of renewed tokens by the consumer's level", async () => {
+    // An app hosted elsewhere never calls the rack: it reads `mcp_access` from
+    // the token, so a lowered level has to be in the next token it is issued.
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+    const group = await db.mcpGroup.findUniqueOrThrow({
+      where: { name: "vitest-oauth-group" },
+    });
+    await db.mcpGroupUser.create({ data: { groupId: group.id, userId: user.id } });
+    const resource = `${baseUrl}/mcp/sample`;
+    const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Vitest renewing client",
+        application_type: "native",
+        redirect_uris: [REDIRECT_URI],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    const { client_id: clientId } = (await registration.json()) as { client_id: string };
+    expect(registration.status).toBe(201);
+    applicationIds.push(clientId);
+
+    const verifier = b64url(randomBytes(32));
+    const query = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: REDIRECT_URI,
+      scope: "openid offline_access mcp:sample:read mcp:sample:write",
+      code_challenge: b64url(createHash("sha256").update(verifier).digest()),
+      code_challenge_method: "S256",
+      resource,
+    });
+    const authorize = await fetch(`${baseUrl}/api/auth/oauth2/authorize?${query}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    const consentRedirect = await redirectTarget(authorize, baseUrl);
+    expect(consentRedirect.pathname, consentRedirect.toString()).toBe("/consent");
+    const consent = await fetch(`${baseUrl}/api/auth/oauth2/consent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl, cookie },
+      body: JSON.stringify({
+        accept: true,
+        oauth_query: consentRedirect.search.slice(1),
+      }),
+    });
+    const consentBody = (await consent.json()) as { url: string };
+    expect(consent.status, JSON.stringify(consentBody)).toBe(200);
+
+    const issue = async (params: Record<string, string>) => {
+      const response = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ ...params, client_id: clientId, resource }),
+      });
+      const body = (await response.json()) as {
+        access_token: string;
+        refresh_token: string;
+      };
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      const claims = JSON.parse(
+        Buffer.from(body.access_token.split(".")[1]!, "base64url").toString(),
+      ) as { mcp_access?: Record<string, string> };
+      return { refreshToken: body.refresh_token, access: claims.mcp_access };
+    };
+    const setLevel = async (access: string) => {
+      const response = await fetch(`${baseUrl}/api/consumers/grants`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ clientIds: [clientId], slug: "sample", access }),
+      });
+      expect(response.status, await response.text()).toBe(200);
+    };
+
+    const first = await issue({
+      grant_type: "authorization_code",
+      code: new URL(consentBody.url).searchParams.get("code")!,
+      code_verifier: verifier,
+      redirect_uri: REDIRECT_URI,
+    });
+    expect(first.access).toEqual({ sample: "write" });
+
+    await setLevel("read");
+    const lowered = await issue({
+      grant_type: "refresh_token",
+      refresh_token: first.refreshToken,
+    });
+    expect(lowered.access).toEqual({ sample: "read" });
+
+    // Back within what was consented: no new authorization needed.
+    await setLevel("write");
+    const restored = await issue({
+      grant_type: "refresh_token",
+      refresh_token: lowered.refreshToken,
+    });
+    expect(restored.access).toEqual({ sample: "write" });
+
+    await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
+  });
+
   it.each(["none", "client_secret_basic", "client_secret_post"] as const)(
     "supports identity-only consent and application access with %s",
     async (authMethod) => {
