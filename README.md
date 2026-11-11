@@ -185,7 +185,10 @@ Trois collections, qu'il ne faut pas confondre :
   par MCP connecté ; les clients de même nom sont regroupés sur une seule carte. Tout client qui
   détient un droit sur un MCP du compte y figure, **même classé application** : un agent dont
   les métadonnées publient une adresse (Codex, ChatGPT) a pu être classé ainsi, et ses droits
-  doivent rester visibles et coupables. Un client OAuth ne dit jamais au rack quel compte est
+  doivent rester visibles et coupables. C'est vrai aussi d'un client désactivé ou fermé aux
+  groupes du compte : son droit reprendrait effet si la règle changeait, il reste donc listé,
+  signalé comme bloqué. Une application n'est jamais regroupée avec un autre client, même de
+  même nom : une carte ne déconnecte pas deux clients sans rapport. Un client OAuth ne dit jamais au rack quel compte est
   connecté de son côté : l'écran de consentement affiche donc en évidence le compte Rack qui
   approuve, avec un lien pour en changer, et propose de **nommer la connexion** (« Codex,
   portable perso ») ; ce nom est repris dans « Mes consommateurs ».

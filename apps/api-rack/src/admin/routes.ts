@@ -297,7 +297,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
    * A client that holds a right on an MCP of this account is listed whatever
    * its kind: an agent whose metadata publishes an address may have been
    * filed as an application, and what it may do in the user's name has to
-   * stay visible and revocable all the same.
+   * stay visible and revocable all the same. That holds when the client is
+   * disabled or closed to this account's groups: the right would work again
+   * the day the policy changes, so it is listed, flagged as blocked.
    */
   app.get("/api/consumers", async (request, reply) => {
     const user = await currentUser(request);
@@ -332,6 +334,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         clientId: true,
         name: true,
         uri: true,
+        kind: true,
         disabled: true,
         accessRestricted: true,
         applicationGroups: {
@@ -340,13 +343,19 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
       },
     });
+    const granted = new Set(grants.map((grant) => grant.clientId));
 
     // An agent that registers itself gets one client per MCP it connects to:
     // the same name is the same agent, shown once with everything it holds.
+    // Only such agents are merged. A declared application stands alone even
+    // when it bears the same name: one card must never disconnect two
+    // unrelated clients.
     interface Consumer {
       name: string | null;
       url: string | null;
       clientIds: string[];
+      /** No client of this card may be used by the account right now. */
+      blocked: boolean;
       connectedAt: Date;
       grants: Map<
         string,
@@ -364,17 +373,26 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     const consumers = new Map<string, Consumer>();
     const byClient = new Map<string, Consumer>();
     for (const client of clients) {
-      if (isRackApplication(client, deps.baseUrl) || !applicationAllowed(client))
-        continue;
-      const key = client.name?.trim().toLowerCase() || client.clientId;
+      if (isRackApplication(client, deps.baseUrl)) continue;
+      const allowed = applicationAllowed(client);
+      // Without a right there is nothing to show of a client the account
+      // may not use; with one, it stays in sight.
+      if (!allowed && !granted.has(client.clientId)) continue;
+      const name = client.name?.trim().toLowerCase();
+      const key =
+        client.kind === "consumer" && name
+          ? `agent ${name}`
+          : `client ${client.clientId}`;
       const consumer: Consumer = consumers.get(key) ?? {
         name: client.name,
         url: publicUrl(client.uri),
         clientIds: [],
+        blocked: true,
         connectedAt: new Date(0),
         grants: new Map(),
       };
       consumer.url ??= publicUrl(client.uri);
+      consumer.blocked &&= !allowed;
       consumer.clientIds.push(client.clientId);
       consumers.set(key, consumer);
       byClient.set(client.clientId, consumer);
@@ -411,6 +429,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         name: consumer.name,
         url: consumer.url,
         clientIds: consumer.clientIds,
+        blocked: consumer.blocked,
         connectedAt: consumer.connectedAt,
         grants: [...consumer.grants.values()].map((grant) => {
           // What the account itself may do today caps everything it granted.

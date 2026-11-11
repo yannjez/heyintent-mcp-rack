@@ -305,6 +305,59 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     expect(
       (await consumers()).find((c) => c.clientIds.includes(client.client_id))?.grants[0],
     ).toMatchObject({ slug: "sample", labels: ["Vitest, portable perso"] });
+
+    // A second client of the same agent (same name) shares its card; a
+    // declared application bearing that name does not, or one click on
+    // « Déconnecter » would revoke two unrelated clients.
+    const twinRegistration = await fetch(asMeta.registration_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Vitest MCP client",
+        application_type: "native",
+        redirect_uris: [REDIRECT_URI],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    const twin = (await twinRegistration.json()) as { client_id: string };
+    expect(twinRegistration.status).toBe(201);
+    applicationIds.push(twin.client_id);
+    await db.mcpGrant.create({
+      data: {
+        clientId: twin.client_id,
+        userId: user.id,
+        mcpId: sample.id,
+        access: "read",
+        consentedAccess: "read",
+      },
+    });
+    const cardOf = async (clientId: string) =>
+      (await consumers()).find((c) => c.clientIds.includes(clientId));
+    expect((await cardOf(client.client_id))?.clientIds.sort()).toEqual(
+      [client.client_id, twin.client_id].sort(),
+    );
+    await db.oauthClient.update({
+      where: { clientId: twin.client_id },
+      data: { kind: "application" },
+    });
+    expect((await cardOf(client.client_id))?.clientIds).toEqual([client.client_id]);
+    expect((await cardOf(twin.client_id))?.clientIds).toEqual([twin.client_id]);
+    // Closed to this account's groups, the application keeps its right, so it
+    // stays listed: the right would work again if the policy changed.
+    await db.oauthClient.update({
+      where: { clientId: twin.client_id },
+      data: { accessRestricted: true },
+    });
+    expect(await cardOf(twin.client_id)).toMatchObject({
+      blocked: true,
+      grants: [expect.objectContaining({ slug: "sample" })],
+    });
+    expect(await cardOf(client.client_id)).toMatchObject({ blocked: false });
+    await db.mcpGrant.deleteMany({ where: { clientId: twin.client_id } });
+    // Without a right, a client the account may not use is not shown.
+    expect(await cardOf(twin.client_id)).toBeUndefined();
     const call = () =>
       fetch(`${baseUrl}/mcp/sample`, {
         method: "POST",
