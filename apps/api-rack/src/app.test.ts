@@ -1117,7 +1117,17 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     // An admin can promote an agent that is in fact an application.
     await fetch(
       `${baseUrl}/api/admin/applications/${encodeURIComponent(agent.client_id)}`,
-      { method: "PATCH", headers, body: JSON.stringify({ kind: "application" }) },
+      {
+        method: "PATCH",
+        headers,
+        // What the admin form sends: every field, the policy left as it was.
+        body: JSON.stringify({
+          kind: "application",
+          disabled: false,
+          accessRestricted: false,
+          groupIds: [],
+        }),
+      },
     );
     const catalogue = (await (
       await fetch(`${baseUrl}/api/admin/applications`, { headers: { cookie } })
@@ -1125,6 +1135,12 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     expect(catalogue.find((c) => c.clientId === agent.client_id)?.kind).toBe(
       "application",
     );
+    // Refiling is bookkeeping: the account's authorisation survives it.
+    expect(
+      await db.oauthConsent.count({
+        where: { userId: user.id, clientId: agent.client_id },
+      }),
+    ).toBe(1);
   });
 
   it("groups a resource under the application it is a channel of", async () => {
