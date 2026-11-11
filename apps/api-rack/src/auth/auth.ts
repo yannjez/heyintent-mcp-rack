@@ -11,6 +11,7 @@ import { APIError } from "better-auth/api";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { admin, emailOTP, jwt } from "better-auth/plugins";
 import { canAccessApplication } from "./applications.js";
+import { mcpResourceIdentifier } from "./grants.js";
 import type { OtpSender } from "./email.js";
 
 export const API_KEY_PREFIX = "rk_";
@@ -31,6 +32,21 @@ export interface AuthInput {
   trustedOrigins?: string[];
   /** Apps hosted elsewhere: tokens are issued for `<url>` (UI) and `<url>/mcp`. */
   externalResources?: { slug: string; name: string; url: string }[];
+  /**
+   * MCPs the rack serves itself. Each is its own OAuth resource
+   * (`<base>/mcp/<slug>`) carrying its two scopes only.
+   */
+  mcpResources?: { slug: string; name: string }[];
+  /**
+   * Called once the user accepted the consent screen, with the scopes kept.
+   * The provider's own consent row is overwritten on each authorization; the
+   * rack keeps its record of who may use what from here.
+   */
+  onConsent?: (input: {
+    userId: string;
+    clientId: string;
+    scopes: string[];
+  }) => Promise<void>;
   /** Current MCP access of a user, embedded in access tokens as `mcp_access`. */
   mcpAccesses?: (userId: string) => Promise<Record<string, Access>>;
 }
@@ -117,6 +133,11 @@ export function createAuth(db: Db | object, input: AuthInput) {
   const resource = mcpResource(input.baseUrl);
   const scopes = input.extraScopes ?? [];
   scopes.unshift(...BASE_SCOPES.filter((scope) => !scopes.includes(scope)));
+  const mcpResources = (input.mcpResources ?? []).map((mcp) => ({
+    identifier: mcpResourceIdentifier(input.baseUrl, mcp.slug),
+    name: mcp.name,
+    allowedScopes: [...BASE_SCOPES, ...mcpScopes(mcp.slug)],
+  }));
 
   // Keep the client identifier tied to this request across login continuations
   // and token issuance. OAuth validates the signed query/client credentials.
@@ -182,6 +203,7 @@ export function createAuth(db: Db | object, input: AuthInput) {
         // Explicit resource row: the Prisma scalar list `allowedScopes` cannot be null.
         resources: [
           { identifier: resource, name: "MCP Accès", allowedScopes: scopes },
+          ...mcpResources,
           ...(input.externalResources ?? []).flatMap((external) =>
             externalResourceIdentifiers([external]).map((identifier) => ({
               identifier,
@@ -192,11 +214,12 @@ export function createAuth(db: Db | object, input: AuthInput) {
           ),
         ],
         resourceSeedMode: "merge",
-        // Per-client resource checks stay on: new clients are linked to external
-        // apps as well as to the rack (mcp() adds its own resource).
-        clientRegistrationDefaultResources: externalResourceIdentifiers(
-          input.externalResources,
-        ),
+        // Per-client resource checks stay on: new clients are linked to every
+        // MCP of the rack and to external apps (mcp() adds its own resource).
+        clientRegistrationDefaultResources: [
+          ...mcpResources.map((mcp) => mcp.identifier),
+          ...externalResourceIdentifiers(input.externalResources),
+        ],
         allowDynamicClientRegistration: true,
         allowUnauthenticatedClientRegistration: true,
         scopes,
@@ -249,9 +272,9 @@ export function createAuth(db: Db | object, input: AuthInput) {
     const url = new URL(request.url);
     let authRequest = request;
     let clientId = url.searchParams.get("client_id") ?? undefined;
+    let body: Record<string, unknown> = {};
     if (request.method === "POST") {
       const copy = request.clone();
-      let body: Record<string, unknown> = {};
       try {
         if (request.headers.get("content-type")?.includes("application/json")) {
           body = (await copy.json()) as Record<string, unknown>;
@@ -317,7 +340,45 @@ export function createAuth(db: Db | object, input: AuthInput) {
         }
       }
     }
-    return oauthClient.run(clientId, () => handler(authRequest));
+    const response = await oauthClient.run(clientId, () => handler(authRequest));
+    if (
+      input.onConsent &&
+      clientId &&
+      response.ok &&
+      request.method === "POST" &&
+      url.pathname.endsWith("/oauth2/consent") &&
+      body?.accept === true &&
+      typeof body.oauth_query === "string"
+    ) {
+      // The provider verified the signed query and answered: the consent holds
+      // once it hands back an authorization code.
+      const next = (await response
+        .clone()
+        .json()
+        .catch(() => null)) as { url?: string } | null;
+      const issued =
+        typeof next?.url === "string" &&
+        new URL(next.url, input.baseUrl).searchParams.has("code");
+      const session = issued
+        ? await auth.api.getSession({ headers: request.headers })
+        : null;
+      if (session) {
+        const asked = (new URLSearchParams(body.oauth_query).get("scope") ?? "")
+          .split(/\s+/)
+          .filter(Boolean);
+        // Without an explicit selection the user accepted what was asked.
+        const kept =
+          typeof body.scope === "string"
+            ? new Set(body.scope.split(/\s+/).filter(Boolean))
+            : null;
+        await input.onConsent({
+          userId: session.user.id,
+          clientId,
+          scopes: kept ? asked.filter((scope) => kept.has(scope)) : asked,
+        });
+      }
+    }
+    return response;
   };
   return auth;
 }

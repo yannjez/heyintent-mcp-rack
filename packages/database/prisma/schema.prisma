@@ -41,6 +41,7 @@ model Mcp {
   toolCalls           ToolCall[]
   accesses            McpAccess[]
   groups              McpGroupMcp[]
+  grants              McpGrant[]
 
   @@map("mcps")
 }
@@ -107,6 +108,32 @@ model McpAccess {
   @@map("mcp_access")
 }
 
+/// What a user allowed one OAuth client to do on one MCP. Written when the
+/// user accepts the consent screen, checked on every call: lowering or deleting
+/// a row cuts the client at once, whatever tokens it still holds.
+
+model McpGrant {
+  id              String      @id @default(cuid())
+  clientId        String
+  client          OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mcpId           String
+  mcp             Mcp         @relation(fields: [mcpId], references: [id], onDelete: Cascade)
+  /// Level in force, "read" or "write": the user may lower it at any time.
+  access          String
+  /// Level accepted on the consent screen: the ceiling `access` may return to
+  /// without a new authorization.
+  consentedAccess String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([clientId, userId, mcpId])
+  @@index([userId])
+  @@index([mcpId])
+  @@map("mcp_grants")
+}
+
 /// Key/value store scoped by MCP and user (userId "" = shared across users).
 
 model McpData {
@@ -167,6 +194,7 @@ model User {
   oauthrefreshtokens  OauthRefreshToken[]
   oauthaccesstokens   OauthAccessToken[]
   oauthconsents       OauthConsent[]
+  mcpGrants           McpGrant[]
 
   @@unique([email])
   @@map("user")
@@ -314,6 +342,8 @@ model OauthClient {
   oauthconsents                    OauthConsent[]
   /// MCP channels of the same product.
   resources                        Mcp[]                 @relation("ApplicationResources")
+  /// What each account allowed this client to do, MCP by MCP.
+  mcpGrants                        McpGrant[]
 
   @@unique([clientId])
   @@index([userId])

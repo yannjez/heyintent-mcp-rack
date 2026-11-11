@@ -175,6 +175,24 @@ async function seed() {
       updatedAt: new Date(),
     },
   });
+  // What the consumer may do, MCP by MCP: one in write, one lowered to read.
+  const granted = await db.mcp.findMany({
+    orderBy: { slug: "asc" },
+    take: 2,
+    select: { id: true },
+  });
+  await db.mcpGrant.deleteMany({
+    where: { clientId: CONSUMER.clientId, userId: admin.id },
+  });
+  await db.mcpGrant.createMany({
+    data: granted.map((mcp, index) => ({
+      clientId: CONSUMER.clientId,
+      userId: admin.id,
+      mcpId: mcp.id,
+      access: index === 0 ? "write" : "read",
+      consentedAccess: "write",
+    })),
+  });
 
   // Without a common group nothing is reachable, admin included.
   const every = await db.mcp.findMany({ select: { id: true, slug: true } });

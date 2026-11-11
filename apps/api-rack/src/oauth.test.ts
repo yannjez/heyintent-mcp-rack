@@ -84,9 +84,21 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       challenge.headers.get("www-authenticate") ?? "",
     )?.[1];
     expect(metadataUrl).toBeTruthy();
+    // The challenge and the metadata are about this MCP only: a client that
+    // follows them asks for `sample`, not for every MCP of the rack.
+    expect(challenge.headers.get("www-authenticate")).toContain(
+      'scope="mcp:sample:read mcp:sample:write"',
+    );
     const resourceMeta = (await (await fetch(metadataUrl!)).json()) as {
       authorization_servers: string[];
+      resource: string;
+      scopes_supported: string[];
     };
+    expect(resourceMeta.resource).toBe(`${baseUrl}/mcp/sample`);
+    expect(resourceMeta.scopes_supported).toEqual([
+      "mcp:sample:read",
+      "mcp:sample:write",
+    ]);
     const issuer = resourceMeta.authorization_servers[0]!;
     const issuerPath = new URL(issuer).pathname;
     const asMeta = (await (
@@ -128,7 +140,7 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       state: "xyz",
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
-      resource: `${baseUrl}/mcp`,
+      resource: `${baseUrl}/mcp/sample`,
     }).toString();
     const authorize = await fetch(authorizeUrl, { redirect: "manual" });
     const loginRedirect = await redirectTarget(authorize, baseUrl);
@@ -176,6 +188,8 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     const consentRedirect = new URL(signInBody.url!, baseUrl);
     expect(consentRedirect.pathname, consentRedirect.toString()).toBe("/consent");
     expect(consentRedirect.searchParams.get("scope")).toContain("mcp:sample");
+    // The consent page learns which MCP is being connected from the resource.
+    expect(consentRedirect.searchParams.get("resource")).toBe(`${baseUrl}/mcp/sample`);
 
     // Consent → redirect back to the client with a code.
     const consent = await fetch(`${baseUrl}/api/auth/oauth2/consent`, {
@@ -204,7 +218,7 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
         redirect_uri: REDIRECT_URI,
         client_id: client.client_id,
         code_verifier: verifier,
-        resource: `${baseUrl}/mcp`,
+        resource: `${baseUrl}/mcp/sample`,
       }).toString(),
     });
     const tokens = (await token.json()) as { access_token?: string; scope?: string };
@@ -249,6 +263,69 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     const echo = await mcp.callTool({ name: "echo", arguments: { message: "oauth" } });
     expect(echo.structuredContent).toMatchObject({ via: "oauth", access: "read" });
     await mcp.close();
+
+    // The consent was recorded as the rack's own grant, shown to the account.
+    const consumers = async () =>
+      (await (
+        await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
+      ).json()) as Array<{
+        clientIds: string[];
+        grants: Array<{ slug: string; access: string | null; max: string | null }>;
+      }>;
+    const mine = (await consumers()).find((c) => c.clientIds.includes(client.client_id));
+    expect(mine?.grants).toEqual([
+      expect.objectContaining({ slug: "sample", access: "read", max: "read" }),
+    ]);
+    const call = () =>
+      fetch(`${baseUrl}/mcp/sample`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${tokens.access_token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+    expect((await call()).status).toBe(200);
+    // Withdrawing the MCP cuts the consumer on its next call, token still
+    // valid, and sends it back through authorization.
+    const withdraw = await fetch(`${baseUrl}/api/consumers/grants`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        clientIds: [client.client_id],
+        slug: "sample",
+        access: "none",
+      }),
+    });
+    expect(withdraw.status, await withdraw.text()).toBe(200);
+    const cut = await call();
+    expect(cut.status).toBe(401);
+    expect(cut.headers.get("www-authenticate")).toContain("invalid_token");
+    expect(await db.oauthConsent.count({ where: { clientId: client.client_id } })).toBe(
+      0,
+    );
+    // Restore the grant: the rest of the scenario is about the other rules.
+    await db.mcpGrant.create({
+      data: {
+        clientId: client.client_id,
+        userId: user.id,
+        mcpId: sample.id,
+        access: "read",
+        consentedAccess: "read",
+      },
+    });
+    // A token is bound to its MCP: this one is refused by any other.
+    const elsewhere = await fetch(`${baseUrl}/mcp/site-public`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokens.access_token}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    expect([401, 404]).toContain(elsewhere.status);
+
     // Restricting the application without linking any group cuts the access.
     await db.oauthClient.update({
       where: { clientId: client.client_id },

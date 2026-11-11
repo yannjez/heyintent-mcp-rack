@@ -1087,8 +1087,8 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     // « Mes consommateurs » is empty until this account authorises the agent.
     const before = (await (
       await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
-    ).json()) as Array<{ clientId: string }>;
-    expect(before.map((c) => c.clientId)).not.toContain(agent.client_id);
+    ).json()) as Array<{ clientIds: string[] }>;
+    expect(before.flatMap((c) => c.clientIds)).not.toContain(agent.client_id);
 
     await db.oauthConsent.create({
       data: {
@@ -1104,8 +1104,10 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     const after = (await (
       await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
-    ).json()) as Array<{ clientId: string; name: string | null }>;
-    expect(after.map((c) => c.clientId)).toContain(agent.client_id);
+    ).json()) as Array<{ clientIds: string[]; grants: unknown[] }>;
+    const listed = after.find((c) => c.clientIds.includes(agent.client_id));
+    // Signed in, nothing granted yet: listed, with no MCP it may call.
+    expect(listed?.grants).toEqual([]);
     // …and only for that account: another user's consent is not theirs.
     const other = await db.user.findUniqueOrThrow({ where: { email: CLIENT_EMAIL } });
     expect(other.id).not.toBe(user.id);

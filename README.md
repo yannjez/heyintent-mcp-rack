@@ -85,7 +85,12 @@ Deux modes, au choix du client :
 1. **OAuth autodiscover** (recommandé pour Claude Code / Cursor) : le client reçoit un `401` avec
    `WWW-Authenticate: Bearer resource_metadata=…`, découvre le serveur d'autorisation, s'enregistre
    (DCR ou CIMD), ouvre le navigateur sur `/login` puis `/consent`, et obtient un access token lié à
-   la ressource `/mcp` avec les scopes `mcp:<slug>:read` / `mcp:<slug>:write` consentis.
+   la ressource `/mcp/<slug>` avec les scopes `mcp:<slug>:read` / `mcp:<slug>:write` consentis.
+
+   **Chaque MCP est sa propre ressource OAuth.** Le `401` de `/mcp/<slug>` et ses métadonnées
+   (`/.well-known/oauth-protected-resource/mcp/<slug>`) n'annoncent que les deux scopes de ce MCP :
+   l'écran de consentement ne montre donc que le MCP qu'on connecte, et le jeton obtenu ne vaut que
+   pour lui. Connecter un second MCP est une seconde autorisation, qui s'ajoute à la première.
 
    ```bash
    claude mcp add --transport http sample http://localhost:3001/mcp/sample
@@ -167,7 +172,12 @@ Trois collections, qu'il ne faut pas confondre :
   Il **s'enregistre lui-même** (DCR ou CIMD) et naît consommateur. Il n'apparaît dans l'espace
   personnel **que pour les comptes qui l'ont réellement autorisé** (ligne de consentement OAuth) :
   un agent étant ouvert à tous par défaut, la règle de groupes montrerait sinon les agents de
-  chacun à tout le monde.
+  chacun à tout le monde. « Mes consommateurs » liste, pour chaque agent, les MCP qu'il peut
+  utiliser et à quel niveau ; le compte peut baisser un niveau, retirer un MCP ou déconnecter
+  l'agent. Ces droits vivent dans la table `mcp_grants` (client, compte, MCP, niveau), écrite à
+  l'acceptation du consentement et **relue à chaque appel MCP** : une coupure s'applique à l'appel
+  suivant, sans attendre l'expiration du jeton. Un agent qui s'enregistre en DCR crée un client
+  par MCP connecté ; les clients de même nom sont regroupés sur une seule carte.
 - une **ressource** est un MCP servi sur `/mcp/<slug>` : un package, un **site** (contenu exposé
   en tools via le package `site-public`) ou un **MCP distant** relayé. Attention : le kind
   « site » est une ressource MCP, pas une application web — pour déclarer un produit, c'est

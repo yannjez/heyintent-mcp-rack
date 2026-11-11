@@ -26,6 +26,15 @@ function parseScope(scope: string): { slug: string; access: Access } | null {
   return { slug, access: level === "read" ? "read" : "write" };
 }
 
+/** Slug of a rack-served MCP from its OAuth resource (`<rack>/mcp/<slug>`). */
+function rackMcpSlug(resource: string): string | null {
+  try {
+    return /^\/mcp\/([^/]+)\/?$/.exec(new URL(resource).pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 interface ScopeGroup {
   slug: string;
   scopes: { read?: string; write?: string };
@@ -44,10 +53,37 @@ export function ConsentPage() {
   const clientId = params.get("client_id");
   const clientName = useClientName(clientId);
   const scope = params.get("scope") ?? "";
-  const requested = useMemo(() => scope.split(/\s+/).filter(Boolean), [scope]);
+  const asked = useMemo(() => scope.split(/\s+/).filter(Boolean), [scope]);
+  // RFC 8707: the resource the client is connecting to. Each MCP of the rack
+  // is its own resource, so the request is about that MCP and no other.
+  const resourceKey = params.getAll("resource").join(" ");
+  const resources = useMemo(() => resourceKey.split(" ").filter(Boolean), [resourceKey]);
   const [applicationAllowed, setApplicationAllowed] = useState<boolean | null>(null);
   const [mcps, setMcps] = useState<UserMcp[] | null>(null);
-  const [accepted, setAccepted] = useState<Set<string>>(new Set(requested));
+  // MCPs the targeted resources stand for; null when the request names none
+  // (identity-only sign-in, or a client that sent no resource).
+  const targets = useMemo<Set<string> | null>(() => {
+    const slugs = new Set<string>();
+    for (const resource of resources) {
+      const slug = rackMcpSlug(resource);
+      if (slug) slugs.add(slug);
+      for (const mcp of mcps ?? []) {
+        if (resource === mcp.url || resource === mcp.appUrl) slugs.add(mcp.slug);
+      }
+    }
+    return slugs.size > 0 ? slugs : null;
+  }, [resources, mcps]);
+  // Scopes of other MCPs are dropped: a client that asks for the whole rack
+  // while connecting to one MCP is shown, and granted, that MCP only.
+  const requested = useMemo(
+    () =>
+      asked.filter((scope) => {
+        const parsed = parseScope(scope);
+        return !parsed || !targets || targets.has(parsed.slug);
+      }),
+    [asked, targets],
+  );
+  const [accepted, setAccepted] = useState<Set<string>>(new Set(asked));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -171,6 +207,8 @@ export function ConsentPage() {
   const available = groups.filter((g) => g.mcp);
   const unavailable = groups.filter((g) => !g.mcp);
   const granted = available.map(levelOf).filter(Boolean) as Access[];
+  // The usual case: one MCP is being connected, name it.
+  const single = groups.length === 1 ? (groups[0]!.mcp?.name ?? groups[0]!.slug) : null;
   const readCount = granted.filter((a) => a === "read").length;
   const writeCount = granted.filter((a) => a === "write").length;
 
@@ -190,12 +228,14 @@ export function ConsentPage() {
         <h1>
           {clientName}{" "}
           <em>{identityOnly ? "demande à vous connecter" : "demande l’accès"}</em>
-          {!identityOnly && " à vos ressources."}
+          {!identityOnly && (single ? ` à ${single}.` : " à vos ressources.")}
         </h1>
         <p>
           {identityOnly
             ? "Cette application demande à utiliser votre identité pour vous connecter."
-            : "Choisissez les ressources que cette application pourra utiliser en votre nom, dans la limite de vos droits."}
+            : single
+              ? "Choisissez le niveau que cette application aura sur cette ressource en votre nom, dans la limite de vos droits. Ses autres autorisations ne changent pas."
+              : "Choisissez les ressources que cette application pourra utiliser en votre nom, dans la limite de vos droits."}
         </p>
         <ul className="consent-facts">
           <li>

@@ -1,6 +1,12 @@
 import { requireMcpAuth } from "@better-auth/mcp";
 import type { McpHttpHandler } from "@modelcontextprotocol/server";
-import { effectiveAccess, type Identity, type Logger } from "@rack/mcp-kit";
+import {
+  effectiveAccess,
+  type Identity,
+  type Logger,
+  mcpScopes,
+  minAccess,
+} from "@rack/mcp-kit";
 import type { FastifyInstance } from "fastify";
 import type { Auth } from "../auth/auth.js";
 import {
@@ -10,10 +16,11 @@ import {
 } from "../auth/identity.js";
 import { canAccessApplication } from "../auth/applications.js";
 import { mcpResource } from "../auth/auth.js";
+import { mcpResourceIdentifier } from "../auth/grants.js";
 import { jsonError, sendWebResponse, toWebRequest } from "../http.js";
 import { createRackMcpHandler, type McpHandlerDeps, toAuthInfo } from "./handler.js";
 import type { McpNotifier } from "./notifier.js";
-import type { McpRegistry } from "./registry.js";
+import { type McpRegistry, toAccess } from "./registry.js";
 
 export interface McpRoutesDeps extends McpHandlerDeps {
   auth: Auth;
@@ -53,7 +60,9 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
     await Promise.all([...handlers.values()].map((handler) => handler.close()));
   });
 
-  const resource = mcpResource(deps.baseUrl);
+  const rack = new URL(mcpResource(deps.baseUrl));
+  const origin = rack.origin;
+  const resourcePath = rack.pathname.replace(/\/$/, "");
 
   /**
    * Resolve the MCP and the caller's effective access, or an HTTP error:
@@ -77,7 +86,23 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
       identity.userId,
       registered.record.id,
     );
-    const access = effectiveAccess(assigned, identity, slug);
+    let access = effectiveAccess(assigned, identity, slug);
+    // An OAuth client also needs what the user granted it on this MCP: the
+    // row is read on every call, so a cut applies before the token expires.
+    if (identity.via === "oauth" && identity.clientId) {
+      const grant = await deps.db.mcpGrant.findUnique({
+        where: {
+          clientId_userId_mcpId: {
+            clientId: identity.clientId,
+            userId: identity.userId,
+            mcpId: registered.record.id,
+          },
+        },
+        select: { access: true },
+      });
+      if (!grant) return { status: 401 as const, error: "Authorization withdrawn" };
+      access = minAccess(access, toAccess(grant.access));
+    }
     if (!access) {
       return {
         status: 403 as const,
@@ -113,7 +138,14 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
         return sendWebResponse(reply, response);
       }
 
+      // An unknown slug is no OAuth resource: nothing to challenge for.
+      if (!deps.registry.definition(slug)) {
+        return jsonError(reply, 404, `MCP "${slug}" not found`);
+      }
+
       // 2. OAuth access token, or the RFC 9728 challenge when missing.
+      const challengeScopes = mcpScopes(slug);
+      const metadataUrl = `${origin}/.well-known/oauth-protected-resource${resourcePath}/${slug}`;
       const protectedHandler = requireMcpAuth(
         deps.auth,
         async (req, claims) => {
@@ -122,14 +154,35 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
             return Response.json({ error: "Invalid token subject" }, { status: 401 });
           const resolved = await resolve(slug, identity);
           if (resolved.status !== 200) {
-            return Response.json({ error: resolved.error }, { status: resolved.status });
+            return Response.json(
+              { error: resolved.error },
+              {
+                status: resolved.status,
+                // A withdrawn grant is a dead token: send the client back
+                // through authorization, where the user decides again.
+                ...(resolved.status === 401
+                  ? {
+                      headers: {
+                        "WWW-Authenticate": [
+                          `Bearer error="invalid_token"`,
+                          `error_description="${resolved.error}"`,
+                          `resource_metadata="${metadataUrl}"`,
+                          `scope="${challengeScopes.join(" ")}"`,
+                        ].join(", "),
+                      },
+                    }
+                  : {}),
+              },
+            );
           }
           return resolved.handler.fetch(req, {
             authInfo: toAuthInfo(identity, resolved.registered.record, resolved.access),
             ...parsedBody,
           });
         },
-        { resource },
+        // Each MCP is its own OAuth resource: the token must have been issued
+        // for this one, and the challenge names its two scopes only.
+        { resource: mcpResourceIdentifier(deps.baseUrl, slug), challengeScopes },
       );
       const response = await protectedHandler(webRequest);
       return sendWebResponse(reply, response);
