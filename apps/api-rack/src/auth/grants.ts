@@ -17,6 +17,25 @@ export function mcpResourceIdentifiers(baseUrl: string, definition: McpDefinitio
     : [mcpResourceIdentifier(baseUrl, definition.slug)];
 }
 
+/**
+ * MCPs an authorization request is about: those its `resource` parameters
+ * name. A scope alone opens nothing, since a token is only accepted by the
+ * resource it was issued for.
+ */
+export function targetedSlugs(
+  baseUrl: string,
+  definitions: readonly McpDefinition[],
+  resources: readonly string[],
+): string[] {
+  return definitions
+    .filter((definition) =>
+      mcpResourceIdentifiers(baseUrl, definition).some((identifier) =>
+        resources.includes(identifier),
+      ),
+    )
+    .map((definition) => definition.slug);
+}
+
 /** Highest level each MCP is asked for in a scope list. */
 export function accessByScope(scopes: Iterable<string>): Record<string, Access> {
   const levels: Record<string, Access> = {};
@@ -36,10 +55,17 @@ export function accessByScope(scopes: Iterable<string>): Record<string, Access> 
  */
 export async function recordConsent(
   db: Db,
-  input: { userId: string; clientId: string; scopes: Iterable<string> },
+  input: {
+    userId: string;
+    clientId: string;
+    scopes: Iterable<string>;
+    /** MCPs the authorization was asked for; scopes of any other are ignored. */
+    targets: Iterable<string>;
+  },
 ): Promise<string[]> {
   const levels = accessByScope(input.scopes);
-  const slugs = Object.keys(levels);
+  const targets = new Set(input.targets);
+  const slugs = Object.keys(levels).filter((slug) => targets.has(slug));
   if (slugs.length === 0) return [];
   const mcps = await db.mcp.findMany({
     where: { slug: { in: slugs } },

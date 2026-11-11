@@ -467,6 +467,56 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
   });
 
+  it("grants no MCP to a request that names none", async () => {
+    // A client configured before each MCP became its own resource, or one
+    // that got an MCP address wrong, names the rack as a whole and asks for
+    // every MCP at once.
+    const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Vitest lost client",
+        application_type: "native",
+        redirect_uris: [REDIRECT_URI],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    const { client_id: clientId } = (await registration.json()) as { client_id: string };
+    expect(registration.status).toBe(201);
+    applicationIds.push(clientId);
+    const authorize = (extra: Record<string, string>) =>
+      fetch(
+        `${baseUrl}/api/auth/oauth2/authorize?${new URLSearchParams({
+          response_type: "code",
+          client_id: clientId,
+          redirect_uri: REDIRECT_URI,
+          code_challenge: b64url(createHash("sha256").update("verifier").digest()),
+          code_challenge_method: "S256",
+          ...extra,
+        })}`,
+        { headers: { cookie }, redirect: "manual" },
+      );
+
+    // Both reach the consent screen, which tells the user what to do. Even if
+    // accepted, the rack records no right: the scopes alone open nothing.
+    for (const request of [
+      { scope: "mcp:sample:read mcp:sample:write", resource: `${baseUrl}/mcp` },
+      { scope: "openid mcp:sample:read" },
+    ]) {
+      const page = await redirectTarget(await authorize(request), baseUrl);
+      expect(page.pathname, page.toString()).toBe("/consent");
+      const consent = await fetch(`${baseUrl}/api/auth/oauth2/consent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: baseUrl, cookie },
+        body: JSON.stringify({ accept: true, oauth_query: page.search.slice(1) }),
+      });
+      expect(consent.status, await consent.text()).toBe(200);
+      expect(await db.mcpGrant.count({ where: { clientId } })).toBe(0);
+    }
+  });
+
   it.each(["none", "client_secret_basic", "client_secret_post"] as const)(
     "supports identity-only consent and application access with %s",
     async (authMethod) => {
