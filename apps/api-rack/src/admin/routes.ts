@@ -475,10 +475,24 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         .safeParse(request.body);
       if (!parsed.success) return invalid(reply, parsed.error);
       const { clientId } = request.params;
-      const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
+      const client = await deps.db.oauthClient.findUnique({
+        where: { clientId },
+        include: { applicationGroups: { select: { groupId: true } } },
+      });
       if (!client || isRackApplication(client, deps.baseUrl))
         return jsonError(reply, 404, "Unknown application");
       const { name, uri, kind, disabled, accessRestricted, groupIds } = parsed.data;
+      // Renaming or refiling a client is bookkeeping: only a real change of
+      // who may use it invalidates what was granted. Wiping the consents on
+      // every save would also erase the link « Mes consommateurs » relies on.
+      const currentGroups = new Set(client.applicationGroups.map((g) => g.groupId));
+      const policyChanged =
+        (disabled !== undefined && disabled !== (client.disabled ?? false)) ||
+        (accessRestricted !== undefined &&
+          accessRestricted !== client.accessRestricted) ||
+        (groupIds !== undefined &&
+          (new Set(groupIds).size !== currentGroups.size ||
+            groupIds.some((id) => !currentGroups.has(id))));
       if (uri && isRackApplication({ clientId, uri }, deps.baseUrl))
         return jsonError(reply, 400, "Rack cannot be used as an application URL");
       if (groupIds) {
@@ -506,9 +520,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           },
         }),
         // Clear saved grants and refresh credentials when the policy changes.
-        deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
-        deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
-        deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+        ...(policyChanged
+          ? [
+              deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
+              deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
+              deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+            ]
+          : []),
       ]);
       return { clientId, updated: true };
     },
