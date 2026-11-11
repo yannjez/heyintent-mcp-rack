@@ -46,6 +46,8 @@ export interface AuthInput {
     userId: string;
     clientId: string;
     scopes: string[];
+    /** RFC 8707 resources the authorization was asked for. */
+    resources: string[];
   }) => Promise<void>;
   /**
    * What this client may currently do for a user, MCP by MCP: the ceiling of
@@ -203,7 +205,12 @@ export function createAuth(db: Db | object, input: AuthInput) {
         loginPage: "/login",
         consentPage: "/consent",
         resource,
-        // Explicit resource row: the Prisma scalar list `allowedScopes` cannot be null.
+        // The provider needs a resource of its own. The rack as a whole is no
+        // longer advertised as one and no route accepts its tokens, but a
+        // client that kept its old configuration still names it: it keeps the
+        // scopes so that such a request reaches the consent screen, which
+        // explains what to do, instead of failing on a bare OAuth error.
+        // (Explicit row: the Prisma scalar list `allowedScopes` cannot be null.)
         resources: [
           { identifier: resource, name: "MCP Accès", allowedScopes: scopes },
           ...mcpResources,
@@ -368,9 +375,8 @@ export function createAuth(db: Db | object, input: AuthInput) {
         ? await auth.api.getSession({ headers: request.headers })
         : null;
       if (session) {
-        const asked = (new URLSearchParams(body.oauth_query).get("scope") ?? "")
-          .split(/\s+/)
-          .filter(Boolean);
+        const query = new URLSearchParams(body.oauth_query);
+        const asked = (query.get("scope") ?? "").split(/\s+/).filter(Boolean);
         // Without an explicit selection the user accepted what was asked.
         const kept =
           typeof body.scope === "string"
@@ -380,6 +386,7 @@ export function createAuth(db: Db | object, input: AuthInput) {
           userId: session.user.id,
           clientId,
           scopes: kept ? asked.filter((scope) => kept.has(scope)) : asked,
+          resources: query.getAll("resource"),
         });
       }
     }

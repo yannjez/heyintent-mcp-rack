@@ -109,11 +109,16 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     expect(asDoc.authorization_endpoint).toContain("/oauth2/authorize");
     expect(asDoc.registration_endpoint).toContain("/oauth2/register");
 
-    const pr = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`);
+    // Each MCP is a protected resource of its own; the rack as a whole is not.
+    const pr = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp/sample`);
     expect(pr.status).toBe(200);
     const prDoc = (await pr.json()) as { resource: string; scopes_supported?: string[] };
-    expect(prDoc.scopes_supported).toContain("mcp:sample:read");
-    expect(prDoc.scopes_supported).toContain("mcp:site-public:write");
+    expect(prDoc.resource).toBe(`${baseUrl}/mcp/sample`);
+    expect(prDoc.scopes_supported).toEqual(["mcp:sample:read", "mcp:sample:write"]);
+    for (const path of ["", "/mcp", "/mcp/unknown-mcp"]) {
+      const none = await fetch(`${baseUrl}/.well-known/oauth-protected-resource${path}`);
+      expect(none.status, path).toBe(404);
+    }
   });
 
   it("hands browser requests for UI pages to the Vite dev server", async () => {
@@ -693,7 +698,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     // authorization server advertise them, and a client registered earlier
     // is not turned away with invalid_scope.
     const pr = (await (
-      await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`)
+      await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp/vitest-site`)
     ).json()) as { scopes_supported?: string[] };
     expect(pr.scopes_supported).toContain("mcp:vitest-site:write");
     const as = (await (

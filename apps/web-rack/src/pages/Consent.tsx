@@ -61,7 +61,7 @@ export function ConsentPage() {
   const [applicationAllowed, setApplicationAllowed] = useState<boolean | null>(null);
   const [mcps, setMcps] = useState<UserMcp[] | null>(null);
   // MCPs the targeted resources stand for; null when the request names none
-  // (identity-only sign-in, or a client that sent no resource).
+  // (identity-only sign-in, or a client that did not say which MCP it wants).
   const targets = useMemo<Set<string> | null>(() => {
     const slugs = new Set<string>();
     for (const resource of resources) {
@@ -74,15 +74,19 @@ export function ConsentPage() {
     return slugs.size > 0 ? slugs : null;
   }, [resources, mcps]);
   // Scopes of other MCPs are dropped: a client that asks for the whole rack
-  // while connecting to one MCP is shown, and granted, that MCP only.
+  // while connecting to one MCP is shown, and granted, that MCP only. Without
+  // a target no MCP scope is kept at all: a token is only accepted by the MCP
+  // it was issued for. Until the MCPs are loaded the targets may be unknown.
   const requested = useMemo(
     () =>
       asked.filter((scope) => {
         const parsed = parseScope(scope);
-        return !parsed || !targets || targets.has(parsed.slug);
+        return !parsed || (targets ? targets.has(parsed.slug) : mcps === null);
       }),
-    [asked, targets],
+    [asked, targets, mcps],
   );
+  const untargeted =
+    mcps !== null && !targets && asked.some((scope) => parseScope(scope));
   const [accepted, setAccepted] = useState<Set<string>>(new Set(asked));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -285,6 +289,14 @@ export function ConsentPage() {
           {applicationAllowed === false && (
             <div className="alert error">
               Vous n'avez pas accès à cette application. Contactez un administrateur.
+            </div>
+          )}
+          {untargeted && (
+            <div className="alert error" role="alert">
+              Cette demande ne désigne aucun MCP du rack : rien ne peut être accordé. Le
+              client a gardé une ancienne configuration, ou l’adresse du MCP y est
+              incorrecte. Supprimez la connexion dans le client, puis recréez-la avec
+              l’adresse du MCP.
             </div>
           )}
           {hasMcpScopes && (

@@ -25,6 +25,7 @@ import {
   grantLevels,
   mcpResourceIdentifier,
   recordConsent,
+  targetedSlugs,
 } from "./auth/grants.js";
 import type { Env } from "./env.js";
 import { sendWebResponse, toWebRequest } from "./http.js";
@@ -94,8 +95,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       externalResources,
       mcpResources: localMcps().map((d) => ({ slug: d.slug, name: d.name })),
       // The rack's own record of what each client may use, MCP by MCP.
-      onConsent: async (consent) => {
-        notifier.toolsChanged(await recordConsent(db, consent));
+      onConsent: async ({ resources, ...consent }) => {
+        const targets = targetedSlugs(env.baseUrl, registry.definitions, resources);
+        notifier.toolsChanged(await recordConsent(db, { ...consent, targets }));
       },
       // A disabled MCP grants nothing, and the level the account set for this
       // client applies, as on the rack's own /mcp/:slug route.
@@ -213,13 +215,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     app.get(`/.well-known/${doc}`, relay);
     app.get(`/.well-known/${doc}/*`, relay);
   }
-  app.get("/.well-known/oauth-protected-resource", async (request, reply) =>
-    sendWebResponse(reply, await auth.handler(toWebRequest(request))),
-  );
   // RFC 9728, one document per MCP: a client connecting to /mcp/<slug> is
   // told about that MCP's two scopes only, so the consent screen it opens
   // shows this MCP and not the whole rack. The provider knows a single
   // protected resource; its document is reused with the MCP's own identity.
+  // Nothing else is a protected resource here: no document at the root nor
+  // for an unknown MCP, or a client that got an address wrong would fall
+  // back on it and ask for the whole rack.
   const rackResourcePath = new URL(rackResource).pathname.replace(/\/$/, "");
   app.get<{ Params: { "*": string } }>(
     "/.well-known/oauth-protected-resource/*",
@@ -230,7 +232,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         : null;
       const definition = slug ? registry.definition(slug) : undefined;
       if (!slug || !definition || definition.external) {
-        return sendWebResponse(reply, await auth.handler(toWebRequest(request)));
+        return reply.code(404).send({ error: "Unknown protected resource" });
       }
       const base = await auth.handler(
         toWebRequest(request, `/.well-known/oauth-protected-resource${rackResourcePath}`),

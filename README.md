@@ -92,6 +92,11 @@ Deux modes, au choix du client :
    l'écran de consentement ne montre donc que le MCP qu'on connecte, et le jeton obtenu ne vaut que
    pour lui. Connecter un second MCP est une seconde autorisation, qui s'ajoute à la première.
 
+   Le rack entier n'est plus une ressource : il n'y a pas de métadonnées à la racine ni pour
+   `/mcp`. Un client qui a gardé une configuration d'avant ce découpage demande encore la
+   ressource `/mcp` avec tous les scopes ; l'écran de consentement ne lui accorde rien et indique
+   de supprimer la connexion dans le client puis de la recréer avec l'adresse du MCP.
+
    ```bash
    claude mcp add --transport http sample http://localhost:3001/mcp/sample
    ```
