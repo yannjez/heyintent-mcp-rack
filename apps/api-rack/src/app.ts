@@ -22,6 +22,7 @@ import {
 import { createOtpSender, type OtpSender } from "./auth/email.js";
 import type { Env } from "./env.js";
 import { sendWebResponse, toWebRequest } from "./http.js";
+import { McpNotifier } from "./mcp/notifier.js";
 import { McpRegistry } from "./mcp/registry.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 
@@ -199,6 +200,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     github: { token: env.githubToken, ...options.toolConfig?.github },
   };
 
+  // Shared by both route sets: the MCP routes build their handlers on its
+  // buses, the admin routes publish on them when rights or definitions move.
+  const notifier = new McpNotifier({ log });
+
   await registerMcpRoutes(app, {
     auth,
     db,
@@ -206,6 +211,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     baseUrl: env.baseUrl,
     toolConfig,
     log,
+    notifier,
   });
 
   await registerKeyRoutes(app, { auth, db, registry });
@@ -215,6 +221,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     db,
     registry,
     baseUrl: env.baseUrl,
+    notifier,
   });
 
   const isAppRequest = (request: FastifyRequest) =>

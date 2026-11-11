@@ -761,6 +761,16 @@ details.tools[open] summary::before {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The "Application" card: a way out of this modal, not a resource kind. */
+.kind-option.as-link {
+  text-align: left;
+  font: inherit;
+  border-style: dashed;
+}
+.kind-option.as-link:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
 .probe {
   display: flex;
   align-items: center;
@@ -1914,4 +1924,15 @@ td .secondary {
   .detail-card .access-row select {
     max-width: 100%;
   }
+}
+
+/* « Mes produits » : one card, and the two ways in given equal footing. */
+.product-card .card-foot.product-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.product-card .card-foot.product-actions .btn {
+  flex: 1 1 auto;
+  justify-content: center;
 }

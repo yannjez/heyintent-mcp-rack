@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { api, type AdminApplication, type AdminMcp, KIND_NAMES } from "../../api";
+import { NewApplicationModal } from "../../components/ApplicationForm";
 import { NewResourceModal } from "../../components/ResourceForm";
 import { Empty, Icon, KindTag, McpIcon, PageHead } from "../../components/ui";
 
-type Filter = "all" | "application" | "resource";
+type Filter = "all" | "application" | "resource" | "consumer";
 
 export function AdminCataloguePage() {
   const navigate = useNavigate();
@@ -14,7 +15,7 @@ export function AdminCataloguePage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<"resource" | "application" | null>(null);
 
   const reload = useCallback(() => {
     Promise.all([
@@ -34,14 +35,26 @@ export function AdminCataloguePage() {
   const entries = [
     ...applications.map((application) => ({
       id: application.clientId,
-      type: "application" as const,
+      // Consumers are OAuth clients too, but they are agents calling the MCP
+      // endpoints, not products a user opens: they get their own collection.
+      type:
+        application.kind === "consumer"
+          ? ("consumer" as const)
+          : ("application" as const),
       kind: null,
       name: application.name || application.clientId,
-      description: application.uri || "Application connectée à Rack",
+      description:
+        application.uri ||
+        (application.kind === "consumer"
+          ? "Client MCP enregistré auprès de Rack"
+          : "Application connectée à Rack"),
       enabled: !application.disabled,
-      access: application.accessRestricted
-        ? `Réservée à ${application.groupIds.length} groupe(s)`
-        : "Tous les utilisateurs",
+      access:
+        application.kind === "consumer"
+          ? `${application.users.length} compte(s) connecté(s)`
+          : application.accessRestricted
+            ? `Réservée à ${application.groupIds.length} groupe(s)`
+            : "Tous les utilisateurs",
       path: `/admin/catalogue/applications/${encodeURIComponent(application.clientId)}`,
     })),
     ...resources.map((resource) => ({
@@ -67,11 +80,16 @@ export function AdminCataloguePage() {
       <PageHead
         eyebrow="Administration"
         title="Applications et ressources"
-        lead="Un catalogue pour gérer les connexions, les ressources et leurs accès. Les sites et MCP distants s'ajoutent ici, sans redéploiement."
+        lead="Applications déclarées, ressources MCP et consommateurs enregistrés. Les sites et MCP distants s'ajoutent ici, sans redéploiement."
         actions={
-          <button className="btn accent" onClick={() => setCreating(true)}>
-            <Icon name="plus" /> Ajouter une ressource
-          </button>
+          <>
+            <button className="btn ghost" onClick={() => setCreating("application")}>
+              <Icon name="plus" /> Déclarer une application
+            </button>
+            <button className="btn accent" onClick={() => setCreating("resource")}>
+              <Icon name="plus" /> Ajouter une ressource
+            </button>
+          </>
         }
       />
       <div className="catalogue-toolbar">
@@ -83,8 +101,17 @@ export function AdminCataloguePage() {
                 label: "Tout",
                 count: applications.length + resources.length,
               },
-              { value: "application", label: "Applications", count: applications.length },
+              {
+                value: "application",
+                label: "Applications",
+                count: applications.filter((a) => a.kind !== "consumer").length,
+              },
               { value: "resource", label: "Ressources", count: resources.length },
+              {
+                value: "consumer",
+                label: "Consommateurs",
+                count: applications.filter((a) => a.kind === "consumer").length,
+              },
             ] as const
           ).map(({ value, label, count }) => (
             <button
@@ -122,7 +149,7 @@ export function AdminCataloguePage() {
                     <McpIcon slug={entry.id} kind={entry.kind ?? undefined} />
                   ) : (
                     <div className="mcp-icon">
-                      <Icon name="grid" />
+                      <Icon name={entry.type === "consumer" ? "plug" : "grid"} />
                     </div>
                   )}
                   <span className={`badge ${entry.enabled ? "ok" : "bad"}`}>
@@ -133,9 +160,11 @@ export function AdminCataloguePage() {
                   <span className="category">
                     {entry.type === "application"
                       ? "Application"
-                      : entry.kind && entry.kind !== "package"
-                        ? KIND_NAMES[entry.kind]
-                        : "Ressource MCP"}
+                      : entry.type === "consumer"
+                        ? "Consommateur"
+                        : entry.kind && entry.kind !== "package"
+                          ? KIND_NAMES[entry.kind]
+                          : "Ressource MCP"}
                     {entry.kind && entry.kind !== "package" && (
                       <KindTag kind={entry.kind} />
                     )}
@@ -156,14 +185,18 @@ export function AdminCataloguePage() {
           ))}
         </div>
       )}
-      {creating && (
+      {creating === "resource" && (
         <NewResourceModal
-          onClose={() => setCreating(false)}
+          onClose={() => setCreating(null)}
+          onChooseApplication={() => setCreating("application")}
           onCreated={(created) => {
             reload();
             navigate(`/admin/catalogue/ressources/${encodeURIComponent(created.slug)}`);
           }}
         />
+      )}
+      {creating === "application" && (
+        <NewApplicationModal onClose={() => setCreating(null)} onCreated={reload} />
       )}
     </>
   );

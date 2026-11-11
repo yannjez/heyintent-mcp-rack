@@ -1,4 +1,10 @@
-import { ACCESS_LEVELS, USER_KINDS } from "@rack/mcp-kit";
+import {
+  type Access,
+  ACCESS_LEVELS,
+  CLIENT_KINDS,
+  isClientKind,
+  USER_KINDS,
+} from "@rack/mcp-kit";
 import type { Db } from "@rack/database";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
@@ -12,7 +18,8 @@ import type { Auth } from "../auth/auth.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
 import { presentKey } from "../keys/routes.js";
-import { type McpRegistry, RegistryError } from "../mcp/registry.js";
+import type { McpNotifier } from "../mcp/notifier.js";
+import { type McpListing, type McpRegistry, RegistryError } from "../mcp/registry.js";
 import {
   parseResourceConfig,
   probeResource,
@@ -25,6 +32,8 @@ export interface AdminRoutesDeps {
   db: Db;
   registry: McpRegistry;
   baseUrl: string;
+  /** Shared with the MCP routes: pushes `tools/list_changed` when rights move. */
+  notifier: McpNotifier;
 }
 
 const patchMcpSchema = z.object({
@@ -33,6 +42,8 @@ const patchMcpSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   description: z.string().trim().max(500).optional(),
   config: z.record(z.string(), z.unknown()).optional(),
+  /** Application this resource is a channel of; null detaches it. */
+  clientId: z.string().min(1).max(255).nullable().optional(),
 });
 
 const SLUG = /^[a-z0-9][a-z0-9-]{1,62}$/;
@@ -68,6 +79,30 @@ const patchUserSchema = z.strictObject({
   role: z.enum(["user", "admin"]).optional(),
   banned: z.boolean().optional(),
   groupIds: z.array(z.string().min(1).max(100)).max(100).optional(),
+});
+
+/** An address a browser can be sent to: http(s), and no credentials in it. */
+const httpUrl = z
+  .string()
+  .url()
+  .max(2000)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, "Use an HTTP(S) URL without credentials");
+
+const createApplicationSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  /** Where "Ouvrir l'application" sends the user. */
+  uri: httpUrl.optional(),
+  /** Required by OAuth: where the authorization code comes back. */
+  redirectUris: z.array(httpUrl).min(1).max(10),
+  accessRestricted: z.boolean().default(false),
+  groupIds: z.array(z.string().min(1).max(100)).max(100).default([]),
 });
 
 const accessSchema = z.object({
@@ -113,6 +148,35 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     return jsonError(reply, 400, error.issues.map((i) => i.message).join("; "));
   }
 
+  /**
+   * The address a browser may be sent to, or null. A client may register any
+   * `client_uri`, so only plain http(s) without embedded credentials is
+   * handed to the UI; native agents usually have none at all.
+   */
+  function publicUrl(uri: string | null): string | null {
+    try {
+      const parsed = new URL(uri ?? "");
+      if (!["https:", "http:"].includes(parsed.protocol)) return null;
+      if (parsed.username || parsed.password) return null;
+      return parsed.toString();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * MCPs these groups make available: changing a group, or who belongs to it,
+   * changes the tool list its members are served.
+   */
+  async function slugsOfGroups(groupIds: string[]): Promise<string[]> {
+    if (groupIds.length === 0) return [];
+    const rows = await deps.db.mcpGroupMcp.findMany({
+      where: { groupId: { in: [...new Set(groupIds)] } },
+      include: { mcp: { select: { slug: true } } },
+    });
+    return rows.map((row) => row.mcp.slug);
+  }
+
   app.get("/api/me", async (request, reply) => {
     const user = await currentUser(request);
     if (!user) return jsonError(reply, 401, "Sign in required");
@@ -149,19 +213,25 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     ]);
     return mcps
       .filter((mcp) => mcp.enabled && mcp.loaded && accesses[mcp.slug])
-      .map((mcp) => ({
-        slug: mcp.slug,
-        name: mcp.name,
-        description: mcp.description,
-        category: mcp.category,
-        version: mcp.version,
-        kind: mcp.kind,
-        access: accesses[mcp.slug],
-        tools: mcp.tools,
-        url: mcpUrl(mcp),
-        appUrl: mcp.externalUrl,
-      }));
+      .map((mcp) => presentUserMcp(mcp, accesses[mcp.slug]!));
   });
+
+  /** One MCP as the personal space shows it, with this user's access level. */
+  function presentUserMcp(mcp: McpListing, access: Access) {
+    return {
+      slug: mcp.slug,
+      name: mcp.name,
+      description: mcp.description,
+      category: mcp.category,
+      version: mcp.version,
+      kind: mcp.kind,
+      access,
+      tools: mcp.tools,
+      url: mcpUrl(mcp),
+      appUrl: mcp.externalUrl,
+      clientId: mcp.clientId,
+    };
+  }
 
   /** Applications available to the signed-in user; never expose OAuth credentials. */
   app.get("/api/applications", async (request, reply) => {
@@ -169,6 +239,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     if (!user) return jsonError(reply, 401, "Sign in required");
     if (user.banned) return [];
     const clients = await deps.db.oauthClient.findMany({
+      where: { kind: "application" },
       orderBy: [{ name: "asc" }, { clientId: "asc" }],
       select: {
         clientId: true,
@@ -182,26 +253,78 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
       },
     });
+    // A product is one application plus the MCP channels attached to it. The
+    // two carry their own access rules, so a user may see the back-office and
+    // not the MCP, or the reverse — each side is filtered on its own.
+    const [mcps, accesses] = await Promise.all([
+      deps.registry.list(),
+      deps.registry.userAccesses(user.id, user.isAdmin),
+    ]);
+    const reachable = mcps.filter(
+      (mcp) => mcp.enabled && mcp.loaded && accesses[mcp.slug],
+    );
     return clients
       .filter(
         (client) =>
           !isRackApplication(client, deps.baseUrl) && applicationAllowed(client),
       )
-      .map(({ clientId, name, uri }) => {
-        let url: string | null = null;
-        try {
-          const parsed = new URL(uri ?? "");
-          if (
-            ["https:", "http:"].includes(parsed.protocol) &&
-            !parsed.username &&
-            !parsed.password
-          )
-            url = parsed.toString();
-        } catch {
-          /* Native clients may have no website. */
-        }
-        return { clientId, name, url };
-      });
+      .map(({ clientId, name, uri }) => ({
+        clientId,
+        name,
+        url: publicUrl(uri),
+        resources: reachable
+          .filter((mcp) => mcp.clientId === clientId)
+          .map((mcp) => presentUserMcp(mcp, accesses[mcp.slug]!)),
+      }));
+  });
+
+  /**
+   * The agents this account connected to the rack (Codex, Claude Code…).
+   *
+   * Unlike applications, a consumer is listed only for the users who actually
+   * signed in through it: an agent registers itself, unrestricted, so the
+   * group policy would otherwise show everyone's agents to everyone. The
+   * consent row is the link, and it is also what the user would revoke.
+   */
+  app.get("/api/consumers", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    if (user.banned) return [];
+    const consents = await deps.db.oauthConsent.findMany({
+      where: { userId: user.id, oauthclient: { kind: "consumer" } },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        updatedAt: true,
+        oauthclient: {
+          select: {
+            clientId: true,
+            name: true,
+            uri: true,
+            disabled: true,
+            accessRestricted: true,
+            applicationGroups: {
+              where: { group: { users: { some: { userId: user.id } } } },
+              select: { groupId: true },
+            },
+          },
+        },
+      },
+    });
+    const seen = new Set<string>();
+    return consents
+      .filter(({ oauthclient }) => {
+        if (seen.has(oauthclient.clientId)) return false;
+        seen.add(oauthclient.clientId);
+        return (
+          !isRackApplication(oauthclient, deps.baseUrl) && applicationAllowed(oauthclient)
+        );
+      })
+      .map(({ oauthclient, updatedAt }) => ({
+        clientId: oauthclient.clientId,
+        name: oauthclient.name,
+        url: publicUrl(oauthclient.uri),
+        connectedAt: updatedAt,
+      }));
   });
 
   // ---------------------------------------------------------------- Applications
@@ -214,20 +337,108 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         clientId: true,
         name: true,
         uri: true,
+        kind: true,
         disabled: true,
         accessRestricted: true,
         redirectUris: true,
         scopes: true,
+        userId: true,
         applicationGroups: { select: { groupId: true } },
+        oauthconsents: {
+          distinct: ["userId"],
+          select: { user: { select: { id: true, email: true } } },
+        },
       },
     });
-    return clients
-      .filter((client) => !isRackApplication(client, deps.baseUrl))
-      .map(({ applicationGroups, ...client }) => ({
-        ...client,
-        disabled: client.disabled ?? false,
-        groupIds: applicationGroups.map((g) => g.groupId),
-      }));
+    return (
+      clients
+        .filter((client) => !isRackApplication(client, deps.baseUrl))
+        // `userId` is Better Auth's registrant: dropped, the consents below say
+        // who actually uses the client.
+        .map(({ applicationGroups, oauthconsents, userId: _userId, ...client }) => ({
+          ...client,
+          kind: isClientKind(client.kind) ? client.kind : "consumer",
+          disabled: client.disabled ?? false,
+          groupIds: applicationGroups.map((g) => g.groupId),
+          /** Who signed in through it — the only meaningful owner of an agent. */
+          users: oauthconsents.flatMap((consent) =>
+            consent.user ? [{ id: consent.user.id, email: consent.user.email }] : [],
+          ),
+        }))
+    );
+  });
+
+  /**
+   * Declare an application: a product someone opens, which signs its users in
+   * through the rack. Registration goes through Better Auth's own dynamic
+   * registration endpoint so the credentials are built exactly as they are
+   * for a client that registers itself — only the kind and the access policy
+   * are ours. The secret is returned once and never stored in clear.
+   */
+  app.post("/api/admin/applications", async (request, reply) => {
+    if (!(await requireAdmin(request, reply))) return;
+    const parsed = createApplicationSchema.safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { name, uri, redirectUris, accessRestricted, groupIds } = parsed.data;
+    if (uri && isRackApplication({ clientId: "", uri }, deps.baseUrl))
+      return jsonError(reply, 400, "Rack cannot be used as an application URL");
+    if (groupIds.length > 0) {
+      const count = await deps.db.mcpGroup.count({ where: { id: { in: groupIds } } });
+      if (count !== new Set(groupIds).size) return jsonError(reply, 404, "Unknown group");
+    }
+    const registration = await deps.auth.handler(
+      new Request(new URL("/api/auth/oauth2/register", deps.baseUrl), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: name,
+          ...(uri ? { client_uri: uri } : {}),
+          redirect_uris: redirectUris,
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "client_secret_basic",
+        }),
+      }),
+    );
+    const registered = (await registration.json()) as {
+      client_id?: string;
+      client_secret?: string;
+      error_description?: string;
+      error?: string;
+    };
+    if (!registration.ok || !registered.client_id) {
+      return jsonError(
+        reply,
+        502,
+        registered.error_description ?? registered.error ?? "Registration refused",
+      );
+    }
+    const clientId = registered.client_id;
+    await deps.db.oauthClient.update({
+      where: { clientId },
+      data: {
+        kind: "application",
+        accessRestricted,
+        ...(groupIds.length > 0
+          ? {
+              applicationGroups: {
+                create: [...new Set(groupIds)].map((groupId) => ({ groupId })),
+              },
+            }
+          : {}),
+      },
+    });
+    // The only time the secret leaves the rack: it is hashed at rest.
+    return reply.status(201).send({
+      clientId,
+      clientSecret: registered.client_secret ?? null,
+      name,
+      uri: uri ?? null,
+      redirectUris,
+      kind: "application" as const,
+      accessRestricted,
+      groupIds,
+    });
   });
 
   app.patch<{ Params: { clientId: string } }>(
@@ -255,6 +466,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
             }, "Use an HTTP(S) application URL without credentials")
             .nullable()
             .optional(),
+          /** Promote an agent that registered itself, or demote a declared app. */
+          kind: z.enum(CLIENT_KINDS).optional(),
           disabled: z.boolean().optional(),
           accessRestricted: z.boolean().optional(),
           groupIds: z.array(z.string().min(1)).max(100).optional(),
@@ -265,7 +478,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const client = await deps.db.oauthClient.findUnique({ where: { clientId } });
       if (!client || isRackApplication(client, deps.baseUrl))
         return jsonError(reply, 404, "Unknown application");
-      const { name, uri, disabled, accessRestricted, groupIds } = parsed.data;
+      const { name, uri, kind, disabled, accessRestricted, groupIds } = parsed.data;
       if (uri && isRackApplication({ clientId, uri }, deps.baseUrl))
         return jsonError(reply, 400, "Rack cannot be used as an application URL");
       if (groupIds) {
@@ -279,6 +492,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           data: {
             ...(name !== undefined ? { name } : {}),
             ...(uri !== undefined ? { uri } : {}),
+            ...(kind !== undefined ? { kind } : {}),
             ...(disabled !== undefined ? { disabled } : {}),
             ...(accessRestricted !== undefined ? { accessRestricted } : {}),
             ...(groupIds
@@ -342,17 +556,23 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
 
   app.get("/api/admin/mcps", async (request, reply) => {
     if (!(await requireAdmin(request, reply))) return;
-    const [mcps, links] = await Promise.all([
+    const [mcps, links, applications] = await Promise.all([
       deps.registry.list(),
       deps.db.mcpGroupMcp.findMany({
         include: { group: { include: { users: { select: { userId: true } } } } },
       }),
+      deps.db.oauthClient.findMany({
+        where: { kind: "application" },
+        select: { clientId: true, name: true },
+      }),
     ]);
+    const nameOf = new Map(applications.map((app) => [app.clientId, app.name]));
     return mcps.map((mcp) => {
       const groups = links.filter((link) => link.mcpId === mcp.id);
       return {
         ...mcp,
         url: mcpUrl(mcp),
+        applicationName: mcp.clientId ? (nameOf.get(mcp.clientId) ?? null) : null,
         userCount: new Set(
           groups.flatMap((link) => link.group.users.map((u) => u.userId)),
         ).size,
@@ -373,9 +593,16 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     ]);
     const mcp = mcps.find((m) => m.slug === slug);
     if (!mcp) return null;
+    const application = mcp.clientId
+      ? await deps.db.oauthClient.findUnique({
+          where: { clientId: mcp.clientId },
+          select: { name: true },
+        })
+      : null;
     return {
       ...mcp,
       url: mcpUrl(mcp),
+      applicationName: application?.name ?? null,
       userCount: new Set(links.flatMap((link) => link.group.users.map((u) => u.userId)))
         .size,
       groupCount: links.length,
@@ -422,11 +649,22 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const record = await deps.db.mcp.findUnique({ where: { slug } });
       if (!record) return jsonError(reply, 404, "Unknown MCP");
 
-      const { enabled, name, description, config } = parsed.data;
+      const { enabled, name, description, config, clientId } = parsed.data;
       const kind = deps.registry.kind(slug) ?? "package";
       const editsResource = name !== undefined || description !== undefined || !!config;
       if (kind === "package" && editsResource) {
         return jsonError(reply, 400, "Packages shipped with the rack cannot be edited");
+      }
+      // Only a declared application can own a channel: attaching a resource to
+      // an agent that registered itself would make no sense as a product.
+      if (clientId) {
+        const owner = await deps.db.oauthClient.findUnique({
+          where: { clientId },
+          select: { kind: true },
+        });
+        if (!owner) return jsonError(reply, 404, "Unknown application");
+        if (owner.kind !== "application")
+          return jsonError(reply, 400, "Only an application can own a resource");
       }
       // Validate the whole patch before touching anything: a rejected request
       // must leave the resource exactly as it was, `enabled` included.
@@ -436,8 +674,15 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         if (!parsedConfig.ok) return jsonError(reply, 400, parsedConfig.error);
         resource = parsedConfig.value;
       }
-      if (enabled !== undefined) {
+      if (enabled !== undefined && enabled !== record.enabled) {
         await deps.db.mcp.update({ where: { slug }, data: { enabled } });
+        // A disabled MCP answers 404; connected clients should stop offering
+        // its tools without waiting for the next call to fail.
+        deps.notifier.toolsChanged([slug]);
+      }
+      // Attaching is pure bookkeeping: the resource keeps its own access rules.
+      if (clientId !== undefined && clientId !== record.clientId) {
+        await deps.db.mcp.update({ where: { slug }, data: { clientId } });
       }
       if (kind !== "package" && editsResource) {
         try {
@@ -449,6 +694,39 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         } catch (error) {
           return registryFailure(reply, error);
         }
+      }
+      return presentMcp(slug);
+    },
+  );
+
+  /**
+   * Re-discover the tools of a site or remote resource, without a restart.
+   * The upstream server is queried again, the admin catalog is refreshed and
+   * `tools/list_changed` goes out to the clients listening on this MCP.
+   *
+   * Packages are not reloadable: their definition is the module imported at
+   * boot, and re-importing it would leave the rest of the package's files on
+   * the old code. In development `tsx watch` restarts the rack when
+   * `mcps/<slug>/dist` changes, which is the supported way to pick them up.
+   */
+  app.post<{ Params: { slug: string } }>(
+    "/api/admin/mcps/:slug/reload",
+    async (request, reply) => {
+      if (!(await requireAdmin(request, reply))) return;
+      const slug = request.params.slug;
+      const record = await deps.db.mcp.findUnique({ where: { slug } });
+      if (!record) return jsonError(reply, 404, "Unknown MCP");
+      if ((deps.registry.kind(slug) ?? "package") === "package") {
+        return jsonError(
+          reply,
+          400,
+          "Les packages livrés avec le rack sont rechargés au redémarrage",
+        );
+      }
+      try {
+        await deps.registry.reload(slug);
+      } catch (error) {
+        return registryFailure(reply, error);
       }
       return presentMcp(slug);
     },
@@ -609,6 +887,15 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         if (groups.length !== new Set(groupIds).size)
           return jsonError(reply, 404, "Unknown group");
       }
+      // Groups left behind matter as much as groups joined, and a ban revokes
+      // everything: read the current membership before it is replaced.
+      const touched =
+        groupIds !== undefined || banned !== undefined
+          ? await deps.db.mcpGroupUser.findMany({
+              where: { userId: existing.id },
+              select: { groupId: true },
+            })
+          : [];
       const updated = await deps.db.user.update({
         where: { id: request.params.id },
         data: {
@@ -630,6 +917,14 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       });
       if (banned) {
         await deps.db.session.deleteMany({ where: { userId: updated.id } });
+      }
+      if (touched.length > 0 || groupIds?.length) {
+        deps.notifier.toolsChanged(
+          await slugsOfGroups([
+            ...touched.map((row) => row.groupId),
+            ...(groupIds ?? []),
+          ]),
+        );
       }
       return {
         id: updated.id,
@@ -684,6 +979,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         await deps.db.mcpAccess.deleteMany({
           where: { mcpId: registered.record.id, userId: user.id },
         });
+        deps.notifier.toolsChanged([registered.record.slug]);
         return { slug: registered.record.slug, access: null };
       }
       const row = await deps.db.mcpAccess.upsert({
@@ -696,6 +992,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         },
         update: { access: parsed.data.access, grantedBy: admin.id },
       });
+      // Read ⇄ write changes which tools the user is served: tell the clients
+      // listening on this MCP to list again.
+      deps.notifier.toolsChanged([registered.record.slug]);
       return { slug: registered.record.slug, access: row.access };
     },
   );
@@ -765,6 +1064,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     const group = await deps.db.mcpGroup.create({
       data: { name, description, mcps: { create: rows } },
     });
+    deps.notifier.toolsChanged(mcps);
     return reply.status(201).send(await presentGroup(group));
   });
 
@@ -799,10 +1099,13 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     "/api/admin/groups/:id",
     async (request, reply) => {
       if (!(await requireAdmin(request, reply))) return;
+      // Read the MCPs the group made available before the cascade removes them.
+      const slugs = await slugsOfGroups([request.params.id]);
       const result = await deps.db.mcpGroup.deleteMany({
         where: { id: request.params.id },
       });
       if (result.count === 0) return jsonError(reply, 404, "Unknown group");
+      deps.notifier.toolsChanged(slugs);
       return { deleted: true };
     },
   );
@@ -823,6 +1126,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const mcpId = registered.record.id;
       if (!parsed.data.enabled) {
         await deps.db.mcpGroupMcp.deleteMany({ where: { groupId: group.id, mcpId } });
+        deps.notifier.toolsChanged([registered.record.slug]);
         return { slug: registered.record.slug, enabled: false };
       }
       await deps.db.mcpGroupMcp.upsert({
@@ -830,6 +1134,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         create: { groupId: group.id, mcpId },
         update: {},
       });
+      deps.notifier.toolsChanged([registered.record.slug]);
       return { slug: registered.record.slug, enabled: true };
     },
   );

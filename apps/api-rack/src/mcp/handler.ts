@@ -2,6 +2,7 @@ import {
   createMcpHandler,
   McpServer,
   type McpHttpHandler,
+  type ServerEventBus,
 } from "@modelcontextprotocol/server";
 import type { Db, Mcp } from "@rack/database";
 import {
@@ -42,6 +43,8 @@ export function toAuthInfo(identity: Identity, record: Mcp, access: Access) {
 export function createRackMcpHandler(
   definition: McpDefinition,
   deps: McpHandlerDeps,
+  /** Carries `tools/list_changed` to the `subscriptions/listen` streams open here. */
+  bus?: ServerEventBus,
 ): McpHttpHandler {
   return createMcpHandler(
     async (ctx) => {
@@ -99,6 +102,7 @@ export function createRackMcpHandler(
     {
       // Accept clients still on earlier protocol revisions (Claude Code, Cursor…).
       legacy: "stateless",
+      ...(bus ? { bus } : {}),
       onerror: (error) =>
         deps.log.error("mcp handler error", {
           mcp: definition.slug,

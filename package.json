@@ -19,6 +19,7 @@
     "db:generate": "pnpm --filter @rack/database generate",
     "db:migrate": "pnpm --filter @rack/database migrate",
     "db:seed": "pnpm --filter @rack/database seed",
+    "dev:seed": "pnpm --filter @rack/api-rack dev:seed",
     "db:push": "pnpm --filter @rack/database push",
     "auth:schema": "pnpm --filter @rack/api-rack auth:schema",
     "auth:repair-jwks": "pnpm --filter @rack/api-rack auth:repair-jwks"

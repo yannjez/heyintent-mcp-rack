@@ -12,6 +12,7 @@ import { canAccessApplication } from "../auth/applications.js";
 import { mcpResource } from "../auth/auth.js";
 import { jsonError, sendWebResponse, toWebRequest } from "../http.js";
 import { createRackMcpHandler, type McpHandlerDeps, toAuthInfo } from "./handler.js";
+import type { McpNotifier } from "./notifier.js";
 import type { McpRegistry } from "./registry.js";
 
 export interface McpRoutesDeps extends McpHandlerDeps {
@@ -19,6 +20,8 @@ export interface McpRoutesDeps extends McpHandlerDeps {
   registry: McpRegistry;
   baseUrl: string;
   log: Logger;
+  /** Shared with the admin routes, which publish on it when rights change. */
+  notifier: McpNotifier;
 }
 
 export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDeps) {
@@ -31,14 +34,19 @@ export async function registerMcpRoutes(app: FastifyInstance, deps: McpRoutesDep
     const definition = deps.registry.definition(slug);
     // External MCPs are served by their own app, which validates rack tokens.
     if (!definition || definition.external) return null;
-    const handler = createRackMcpHandler(definition, deps);
+    const handler = createRackMcpHandler(definition, deps, deps.notifier.bus(slug));
     handlers.set(slug, handler);
     return handler;
   }
   const unsubscribe = deps.registry.onChange((slug) => {
     const stale = handlers.get(slug);
     handlers.delete(slug);
-    void stale?.close().catch(() => {});
+    if (!stale) return;
+    // A changed definition is a changed tool list. Publish before closing:
+    // the listen router enqueues the frame synchronously, and `close()` then
+    // ends each stream gracefully so the client knows to listen again.
+    deps.notifier.toolsChanged([slug]);
+    void stale.close().catch(() => {});
   });
   app.addHook("onClose", async () => {
     unsubscribe();

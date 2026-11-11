@@ -21,6 +21,12 @@ const BASE_GROUP = "vitest-base-group";
 const RESOURCE_SLUGS = ["vitest-site", "vitest-remote", "vitest-partner"];
 const EARLY_CLIENT = "Vitest early client";
 const EARLY_REDIRECT = "http://127.0.0.1:9/callback";
+const CLIENT_NAMES = [
+  EARLY_CLIENT,
+  "Vitest agent",
+  "Vitest declared app",
+  "Vitest product app",
+];
 
 describe.skipIf(!databaseUrl)("api-rack", () => {
   const db = createPrismaClient(databaseUrl);
@@ -36,6 +42,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
+    await db.oauthClient.deleteMany({ where: { name: { in: CLIENT_NAMES } } });
     await db.mcp.updateMany({
       where: { slug: "sample" },
       data: { enabled: true, allowedCapabilities: [] },
@@ -82,7 +89,7 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     await db.mcpGroup.deleteMany({ where: { name: { in: [GROUP_NAME, BASE_GROUP] } } });
     await db.mcp.deleteMany({ where: { slug: { in: RESOURCE_SLUGS } } });
-    await db.oauthClient.deleteMany({ where: { name: EARLY_CLIENT } });
+    await db.oauthClient.deleteMany({ where: { name: { in: CLIENT_NAMES } } });
     await db.$disconnect();
   });
 
@@ -944,4 +951,248 @@ describe.skipIf(!databaseUrl)("api-rack", () => {
     });
     expect(journal.length).toBeGreaterThan(0);
   });
+
+  it("reloads the tools of a resource on demand, and refuses it for a package", async () => {
+    // No content-type: Fastify answers 400 to a bodyless JSON request, which
+    // would mask the statuses this test is about.
+    const reload = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    const reloaded = (await reload.json()) as {
+      tools: Array<{ name: string }>;
+      loadError: string | null;
+    };
+    expect(reload.status, JSON.stringify(reloaded)).toBe(200);
+    expect(reloaded.loadError).toBeNull();
+    expect(reloaded.tools.map((t) => t.name)).toContain("remember");
+
+    // A package's definition is the module imported at boot: not reloadable.
+    const pkg = await fetch(`${baseUrl}/api/admin/mcps/sample/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(pkg.status).toBe(400);
+    expect((await pkg.json()).error).toMatch(/redémarrage/);
+
+    const unknown = await fetch(`${baseUrl}/api/admin/mcps/nope/reload`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(unknown.status).toBe(404);
+  });
+
+  it("tells a connected client to list the tools again when its rights change", async () => {
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+    const url = `${baseUrl}/api/admin/users/${user.id}/mcps/sample`;
+    const headers = { "content-type": "application/json", cookie };
+    let announce: ((tools: string[]) => void) | undefined;
+    const nextChange = () =>
+      new Promise<string[]>((resolve) => {
+        announce = resolve;
+      });
+
+    const client = new Client(
+      { name: "test", version: "0.0.0" },
+      {
+        // The 2025 handshake is served statelessly and has no stream to push
+        // on: only a client that negotiated 2026-07-28 is notified.
+        versionNegotiation: { mode: "auto" },
+        listChanged: {
+          tools: {
+            debounceMs: 0,
+            onChanged: (error, tools) => {
+              if (!error) announce?.((tools ?? []).map((tool) => tool.name));
+            },
+          },
+        },
+      },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp/sample`), {
+        requestInit: { headers: { authorization: `Bearer ${apiKey}` } },
+      }),
+    );
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("remember");
+
+    // The write tools go away without the client reconnecting…
+    const downgraded = nextChange();
+    await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ access: "read" }),
+    });
+    expect(await downgraded).not.toContain("remember");
+
+    // …and come back the same way, leaving the rights as the suite set them.
+    const restored = nextChange();
+    await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ access: "write" }),
+    });
+    expect(await restored).toContain("remember");
+    await client.close();
+  });
+
+  it("separates declared applications from the agents that registered themselves", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const user = await db.user.findUniqueOrThrow({ where: { email: EMAIL } });
+
+    // An agent registering itself: born a consumer, never a declared app.
+    const registration = await fetch(`${baseUrl}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Vitest agent",
+        application_type: "native",
+        redirect_uris: ["http://127.0.0.1:7777/callback"],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    const agent = (await registration.json()) as { client_id: string };
+    expect(
+      (await db.oauthClient.findUniqueOrThrow({ where: { clientId: agent.client_id } }))
+        .kind,
+    ).toBe("consumer");
+
+    // An admin declaring an application: credentials returned once.
+    const create = await fetch(`${baseUrl}/api/admin/applications`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Vitest declared app",
+        uri: "https://app.vitest.example",
+        redirectUris: ["https://app.vitest.example/callback"],
+      }),
+    });
+    const declared = (await create.json()) as {
+      clientId: string;
+      clientSecret: string | null;
+      kind: string;
+    };
+    expect(create.status, JSON.stringify(declared)).toBe(201);
+    expect(declared.kind).toBe("application");
+    expect(declared.clientSecret).toBeTruthy();
+
+    // « Mes applications » shows the declared app, never the agent.
+    const applications = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; url: string | null }>;
+    expect(applications.map((a) => a.clientId)).toContain(declared.clientId);
+    expect(applications.map((a) => a.clientId)).not.toContain(agent.client_id);
+
+    // « Mes consommateurs » is empty until this account authorises the agent.
+    const before = (await (
+      await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string }>;
+    expect(before.map((c) => c.clientId)).not.toContain(agent.client_id);
+
+    await db.oauthConsent.create({
+      data: {
+        id: `vitest-consent-${agent.client_id}`,
+        clientId: agent.client_id,
+        userId: user.id,
+        scopes: ["openid"],
+        resources: [],
+        requestedUserInfoClaims: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+    const after = (await (
+      await fetch(`${baseUrl}/api/consumers`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; name: string | null }>;
+    expect(after.map((c) => c.clientId)).toContain(agent.client_id);
+    // …and only for that account: another user's consent is not theirs.
+    const other = await db.user.findUniqueOrThrow({ where: { email: CLIENT_EMAIL } });
+    expect(other.id).not.toBe(user.id);
+    const otherConsents = await db.oauthConsent.count({
+      where: { userId: other.id, clientId: agent.client_id },
+    });
+    expect(otherConsents).toBe(0);
+
+    // An admin can promote an agent that is in fact an application.
+    await fetch(
+      `${baseUrl}/api/admin/applications/${encodeURIComponent(agent.client_id)}`,
+      { method: "PATCH", headers, body: JSON.stringify({ kind: "application" }) },
+    );
+    const catalogue = (await (
+      await fetch(`${baseUrl}/api/admin/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; kind: string }>;
+    expect(catalogue.find((c) => c.clientId === agent.client_id)?.kind).toBe(
+      "application",
+    );
+  });
+
+  it("groups a resource under the application it is a channel of", async () => {
+    const headers = { "content-type": "application/json", cookie };
+    const create = await fetch(`${baseUrl}/api/admin/applications`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Vitest product app",
+        uri: "https://product.vitest.example",
+        redirectUris: ["https://product.vitest.example/callback"],
+      }),
+    });
+    const product = (await create.json()) as { clientId: string };
+    expect(create.status, JSON.stringify(product)).toBe(201);
+
+    // Standalone until attached.
+    const before = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; resources: Array<{ slug: string }> }>;
+    expect(before.find((a) => a.clientId === product.clientId)?.resources).toHaveLength(
+      0,
+    );
+
+    const attach = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ clientId: product.clientId }),
+    });
+    expect(attach.status).toBe(200);
+    expect((await attach.json()).applicationName).toBe("Vitest product app");
+
+    const after = (await (
+      await fetch(`${baseUrl}/api/applications`, { headers: { cookie } })
+    ).json()) as Array<{ clientId: string; resources: Array<{ slug: string }> }>;
+    expect(
+      after.find((a) => a.clientId === product.clientId)?.resources.map((r) => r.slug),
+    ).toEqual(["vitest-remote"]);
+
+    // An agent is not a product: it cannot own a channel.
+    const agent = await deps_consumerClientId(db);
+    if (agent) {
+      const refused = await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ clientId: agent }),
+      });
+      expect(refused.status).toBe(400);
+    }
+
+    // Detaching leaves the resource alone, and deleting the application too.
+    await fetch(`${baseUrl}/api/admin/mcps/vitest-remote`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ clientId: null }),
+    });
+    await db.oauthClient.deleteMany({ where: { clientId: product.clientId } });
+    expect(
+      await db.mcp.findUniqueOrThrow({ where: { slug: "vitest-remote" } }),
+    ).toMatchObject({ clientId: null });
+  });
 });
+
+/** A consumer client id to prove an agent cannot own a resource, if one exists. */
+async function deps_consumerClientId(db: ReturnType<typeof createPrismaClient>) {
+  const consumer = await db.oauthClient.findFirst({
+    where: { kind: "consumer" },
+    select: { clientId: true },
+  });
+  return consumer?.clientId ?? null;
+}

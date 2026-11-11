@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type AdminGroup } from "../../api";
+import {
+  api,
+  type AdminGroup,
+  CLIENT_KIND_NAMES,
+  CLIENT_KINDS,
+  type ClientKind,
+} from "../../api";
 import { useNavigate, useParams, Link } from "react-router";
 import { DetailPage } from "../../components/DetailPage";
 import { PageHead } from "../../components/ui";
@@ -38,6 +44,7 @@ function ApplicationEditor({
         body: JSON.stringify({
           ...(draft.name?.trim() ? { name: draft.name.trim() } : {}),
           uri: draft.uri?.trim() || null,
+          kind: draft.kind,
           disabled: draft.disabled,
           accessRestricted: draft.accessRestricted,
           groupIds: draft.groupIds,
@@ -98,6 +105,35 @@ function ApplicationEditor({
             Cette adresse permet d’ouvrir l’application depuis « Mes applications ».
           </span>
         </label>
+        <label className="field">
+          Type de client
+          <select
+            value={draft.kind}
+            disabled={busy}
+            onChange={(e) => setDraft({ ...draft, kind: e.target.value as ClientKind })}
+          >
+            {CLIENT_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {CLIENT_KIND_NAMES[kind]}
+              </option>
+            ))}
+          </select>
+          <span className="hint">
+            Une application s’ouvre depuis « Mes applications » et suit la règle de
+            groupes ci-dessous. Un consommateur est un agent MCP : il n’apparaît que pour
+            les comptes qui l’ont autorisé.
+          </span>
+        </label>
+        {draft.kind === "consumer" && application.users.length > 0 && (
+          <div className="field">
+            Comptes connectés
+            <ul className="small muted">
+              {application.users.map((user) => (
+                <li key={user.id}>{user.email}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <label className="field">
           Qui peut se connecter via cette application
           <select

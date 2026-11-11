@@ -27,6 +27,21 @@ export function maxAccess(a: Access | null, b: Access | null): Access | null {
   return a ?? b;
 }
 
+/**
+ * What an OAuth client is, from the rack's point of view.
+ *
+ * `consumer` is an agent that talks to the MCP endpoints (Codex, Claude
+ * Code…) and registers itself; `application` is a product someone opens,
+ * declared by an administrator with a public address. A client registering
+ * itself is born a consumer; only an admin promotes it.
+ */
+export const CLIENT_KINDS = ["application", "consumer"] as const;
+export type ClientKind = (typeof CLIENT_KINDS)[number];
+
+export function isClientKind(value: string): value is ClientKind {
+  return (CLIENT_KINDS as readonly string[]).includes(value);
+}
+
 /** User typology, set by an admin. */
 export const USER_KINDS = ["internal", "external", "client"] as const;
 export type UserKind = (typeof USER_KINDS)[number];

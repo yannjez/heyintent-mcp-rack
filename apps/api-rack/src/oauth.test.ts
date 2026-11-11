@@ -310,6 +310,9 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       }
       expect(registration.status).toBe(201);
       applicationIds.push(clientId);
+      // The policy under test is the application one, and a client that
+      // registers itself is born a consumer: promote it as an admin would.
+      await db.oauthClient.update({ where: { clientId }, data: { kind: "application" } });
       const headers = { "content-type": "application/json", origin: baseUrl, cookie };
       const myApplications = async () => {
         const response = await fetch(`${baseUrl}/api/applications`, {
@@ -553,10 +556,13 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
       const publicApplication = (await myApplications()).find(
         (app) => app.clientId === clientId,
       )!;
+      // An application carries the MCP channels of the same product; this one
+      // has none, and no OAuth credential ever leaves the rack.
       expect(publicApplication).toEqual({
         clientId,
         name: "Coding factory",
         url: "https://factory.example/",
+        resources: [],
       });
       await db.oauthClient.update({
         where: { clientId },
