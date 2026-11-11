@@ -5,6 +5,7 @@ import {
   grantedMcpAccess,
   linkClientsToResources,
 } from "./auth/auth.js";
+import { capByGrants } from "./auth/grants.js";
 import { parseExternalMcps } from "./env.js";
 
 describe("EXTERNAL_MCPS", () => {
@@ -57,6 +58,20 @@ describe("mcp_access claim", () => {
 
   it("omits MCPs the user may not use", () => {
     expect(grantedMcpAccess(["mcp:veille-ao:write"], {})).toEqual({});
+  });
+
+  it("is lowered to the level the account set for the client", () => {
+    const allowed = capByGrants(
+      { "veille-ao": "write", sample: "write", other: "read" },
+      { "veille-ao": "read", sample: "write", other: "write", lost: "write" },
+    );
+    // A grant never raises what the user may do, nor restores an MCP they lost.
+    expect(allowed).toEqual({ "veille-ao": "read", sample: "write", other: "read" });
+    // No grant, no access.
+    expect(capByGrants({ sample: "write" }, {})).toEqual({});
+    expect(grantedMcpAccess(["mcp:veille-ao:write"], allowed)).toEqual({
+      "veille-ao": "read",
+    });
   });
 });
 

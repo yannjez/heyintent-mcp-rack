@@ -308,10 +308,28 @@ export interface UserApplication {
   resources: UserMcp[];
 }
 
+/** What this account lets a consumer do on one MCP. */
+export interface ConsumerGrant {
+  slug: string;
+  name: string;
+  kind: McpKind;
+  /** The consumer's OAuth clients holding this authorization. */
+  clientIds: string[];
+  /** Level in force; null when the account itself lost the MCP. */
+  access: Access | null;
+  /** Highest level it can be set to without a new authorization. */
+  max: Access | null;
+}
+
+/**
+ * One agent, as the account sees it. An agent that registers itself gets one
+ * OAuth client per MCP it connects to: they are listed together.
+ */
 export interface UserConsumer {
-  clientId: string;
   name: string | null;
   url: string | null;
+  clientIds: string[];
   /** When this account last granted it access. */
   connectedAt: string;
+  grants: ConsumerGrant[];
 }

@@ -3,6 +3,8 @@ import {
   ACCESS_LEVELS,
   CLIENT_KINDS,
   isClientKind,
+  maxAccess,
+  minAccess,
   USER_KINDS,
 } from "@rack/mcp-kit";
 import type { Db } from "@rack/database";
@@ -15,11 +17,17 @@ import {
   isRackApplication,
 } from "../auth/applications.js";
 import type { Auth } from "../auth/auth.js";
+import { clearProviderGrants, mcpResourceIdentifiers } from "../auth/grants.js";
 import { sessionUser } from "../auth/identity.js";
 import { jsonError, toWebRequest } from "../http.js";
 import { presentKey } from "../keys/routes.js";
 import type { McpNotifier } from "../mcp/notifier.js";
-import { type McpListing, type McpRegistry, RegistryError } from "../mcp/registry.js";
+import {
+  type McpListing,
+  type McpRegistry,
+  RegistryError,
+  toAccess,
+} from "../mcp/registry.js";
 import {
   parseResourceConfig,
   probeResource,
@@ -290,41 +298,205 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     const user = await currentUser(request);
     if (!user) return jsonError(reply, 401, "Sign in required");
     if (user.banned) return [];
-    const consents = await deps.db.oauthConsent.findMany({
-      where: { userId: user.id, oauthclient: { kind: "consumer" } },
-      orderBy: { updatedAt: "desc" },
+    const [consents, grants, accesses, enabled] = await Promise.all([
+      deps.db.oauthConsent.findMany({
+        where: { userId: user.id, oauthclient: { kind: "consumer" } },
+        select: { clientId: true, updatedAt: true },
+      }),
+      deps.db.mcpGrant.findMany({
+        where: { userId: user.id, client: { kind: "consumer" } },
+        orderBy: { mcp: { name: "asc" } },
+        select: {
+          clientId: true,
+          access: true,
+          consentedAccess: true,
+          updatedAt: true,
+          mcp: { select: { slug: true, name: true, kind: true, enabled: true } },
+        },
+      }),
+      deps.registry.userAccesses(user.id),
+      deps.db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
+    ]);
+    const usable = new Set(enabled.map((mcp) => mcp.slug));
+    const clients = await deps.db.oauthClient.findMany({
+      where: {
+        clientId: { in: [...consents, ...grants].map((row) => row.clientId) },
+      },
       select: {
-        updatedAt: true,
-        oauthclient: {
-          select: {
-            clientId: true,
-            name: true,
-            uri: true,
-            disabled: true,
-            accessRestricted: true,
-            applicationGroups: {
-              where: { group: { users: { some: { userId: user.id } } } },
-              select: { groupId: true },
-            },
-          },
+        clientId: true,
+        name: true,
+        uri: true,
+        disabled: true,
+        accessRestricted: true,
+        applicationGroups: {
+          where: { group: { users: { some: { userId: user.id } } } },
+          select: { groupId: true },
         },
       },
     });
-    const seen = new Set<string>();
-    return consents
-      .filter(({ oauthclient }) => {
-        if (seen.has(oauthclient.clientId)) return false;
-        seen.add(oauthclient.clientId);
-        return (
-          !isRackApplication(oauthclient, deps.baseUrl) && applicationAllowed(oauthclient)
-        );
-      })
-      .map(({ oauthclient, updatedAt }) => ({
-        clientId: oauthclient.clientId,
-        name: oauthclient.name,
-        url: publicUrl(oauthclient.uri),
-        connectedAt: updatedAt,
+
+    // An agent that registers itself gets one client per MCP it connects to:
+    // the same name is the same agent, shown once with everything it holds.
+    interface Consumer {
+      name: string | null;
+      url: string | null;
+      clientIds: string[];
+      connectedAt: Date;
+      grants: Map<
+        string,
+        {
+          slug: string;
+          name: string;
+          kind: string;
+          access: Access | null;
+          consented: Access | null;
+          clientIds: string[];
+        }
+      >;
+    }
+    const consumers = new Map<string, Consumer>();
+    const byClient = new Map<string, Consumer>();
+    for (const client of clients) {
+      if (isRackApplication(client, deps.baseUrl) || !applicationAllowed(client))
+        continue;
+      const key = client.name?.trim().toLowerCase() || client.clientId;
+      const consumer: Consumer = consumers.get(key) ?? {
+        name: client.name,
+        url: publicUrl(client.uri),
+        clientIds: [],
+        connectedAt: new Date(0),
+        grants: new Map(),
+      };
+      consumer.url ??= publicUrl(client.uri);
+      consumer.clientIds.push(client.clientId);
+      consumers.set(key, consumer);
+      byClient.set(client.clientId, consumer);
+    }
+    for (const row of [...consents, ...grants]) {
+      const consumer = byClient.get(row.clientId);
+      if (consumer && row.updatedAt > consumer.connectedAt) {
+        consumer.connectedAt = row.updatedAt;
+      }
+    }
+    for (const grant of grants) {
+      const consumer = byClient.get(grant.clientId);
+      if (!consumer) continue;
+      const entry = consumer.grants.get(grant.mcp.slug) ?? {
+        slug: grant.mcp.slug,
+        name: grant.mcp.name,
+        kind: grant.mcp.kind,
+        access: null,
+        consented: null,
+        clientIds: [],
+      };
+      entry.access = maxAccess(entry.access, toAccess(grant.access));
+      entry.consented = maxAccess(entry.consented, toAccess(grant.consentedAccess));
+      entry.clientIds.push(grant.clientId);
+      consumer.grants.set(grant.mcp.slug, entry);
+    }
+    return [...consumers.values()]
+      .sort((a, b) => b.connectedAt.getTime() - a.connectedAt.getTime())
+      .map((consumer) => ({
+        name: consumer.name,
+        url: consumer.url,
+        clientIds: consumer.clientIds,
+        connectedAt: consumer.connectedAt,
+        grants: [...consumer.grants.values()].map((grant) => {
+          // What the account itself may do today caps everything it granted.
+          const own = usable.has(grant.slug) ? (accesses[grant.slug] ?? null) : null;
+          return {
+            slug: grant.slug,
+            name: grant.name,
+            kind: grant.kind,
+            clientIds: grant.clientIds,
+            /** Level in force; null when the account lost the MCP itself. */
+            access: minAccess(grant.access, own),
+            /** Highest level it can be set to without a new authorization. */
+            max: minAccess(grant.consented, own),
+          };
+        }),
       }));
+  });
+
+  const consumerClientsSchema = z.array(z.string().min(1).max(2000)).min(1).max(100);
+
+  /**
+   * Change what a consumer may do on one MCP: lower or restore the level
+   * within what was consented, or "none" to withdraw the MCP. Effective on the
+   * consumer's very next call to the rack; an app hosted elsewhere reads the
+   * level from its token, so it follows at the next issuance (15 minutes at
+   * most). A withdrawal also drops the refresh tokens, so coming back means
+   * going through the consent screen again.
+   */
+  app.put("/api/consumers/grants", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    const parsed = z
+      .strictObject({
+        clientIds: consumerClientsSchema,
+        slug: z.string().min(1).max(63),
+        access: z.enum([...ACCESS_LEVELS, "none"]),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { clientIds, slug, access } = parsed.data;
+    const mcp = await deps.db.mcp.findUnique({ where: { slug }, select: { id: true } });
+    if (!mcp) return jsonError(reply, 404, "Unknown MCP");
+    const owned = { userId: user.id, mcpId: mcp.id, clientId: { in: clientIds } };
+    if (access === "none") {
+      const definition = deps.registry.definition(slug);
+      const [removed] = await deps.db.$transaction([
+        deps.db.mcpGrant.deleteMany({ where: owned }),
+        ...clearProviderGrants(deps.db, {
+          userId: user.id,
+          clientIds,
+          // Without a definition the resource is unknown: drop every token.
+          ...(definition
+            ? { resources: mcpResourceIdentifiers(deps.baseUrl, definition) }
+            : {}),
+        }),
+      ]);
+      deps.notifier.toolsChanged([slug]);
+      return { slug, access, updated: removed.count };
+    }
+    const rows = await deps.db.mcpGrant.findMany({
+      where: owned,
+      select: { id: true, consentedAccess: true },
+    });
+    if (rows.length === 0) return jsonError(reply, 404, "No such authorization");
+    await deps.db.$transaction(
+      rows.map((row) =>
+        deps.db.mcpGrant.update({
+          where: { id: row.id },
+          // Never above what the consent screen was accepted for.
+          data: { access: minAccess(access, toAccess(row.consentedAccess)) ?? "read" },
+        }),
+      ),
+    );
+    deps.notifier.toolsChanged([slug]);
+    return { slug, access, updated: rows.length };
+  });
+
+  /** Withdraw everything this account granted these consumers. */
+  app.post("/api/consumers/disconnect", async (request, reply) => {
+    const user = await currentUser(request);
+    if (!user) return jsonError(reply, 401, "Sign in required");
+    const parsed = z
+      .strictObject({ clientIds: consumerClientsSchema })
+      .safeParse(request.body);
+    if (!parsed.success) return invalid(reply, parsed.error);
+    const { clientIds } = parsed.data;
+    const owned = { userId: user.id, clientId: { in: clientIds } };
+    const grants = await deps.db.mcpGrant.findMany({
+      where: owned,
+      select: { mcp: { select: { slug: true } } },
+    });
+    await deps.db.$transaction([
+      deps.db.mcpGrant.deleteMany({ where: owned }),
+      ...clearProviderGrants(deps.db, { userId: user.id, clientIds }),
+    ]);
+    deps.notifier.toolsChanged(grants.map((grant) => grant.mcp.slug));
+    return { disconnected: true };
   });
 
   // ---------------------------------------------------------------- Applications
@@ -525,6 +697,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
               deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
               deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
               deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+              deps.db.mcpGrant.deleteMany({ where: { clientId } }),
             ]
           : []),
       ]);
@@ -537,6 +710,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       deps.db.oauthAccessToken.deleteMany({ where: { clientId } }),
       deps.db.oauthRefreshToken.deleteMany({ where: { clientId } }),
       deps.db.oauthConsent.deleteMany({ where: { clientId } }),
+      deps.db.mcpGrant.deleteMany({ where: { clientId } }),
     ];
   }
 

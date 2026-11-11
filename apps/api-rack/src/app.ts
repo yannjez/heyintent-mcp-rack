@@ -20,6 +20,12 @@ import {
   mcpResource,
 } from "./auth/auth.js";
 import { createOtpSender, type OtpSender } from "./auth/email.js";
+import {
+  capByGrants,
+  grantLevels,
+  mcpResourceIdentifier,
+  recordConsent,
+} from "./auth/grants.js";
 import type { Env } from "./env.js";
 import { sendWebResponse, toWebRequest } from "./http.js";
 import { McpNotifier } from "./mcp/notifier.js";
@@ -64,6 +70,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const externalResources = registry.definitions.flatMap((d) =>
     d.external ? [{ slug: d.slug, name: d.name, url: d.external.url }] : [],
   );
+  // MCPs served here are one OAuth resource each; external apps declare theirs.
+  const localMcps = () => registry.definitions.filter((d) => !d.external);
+  const mcpResourceIds = () =>
+    localMcps().map((d) => mcpResourceIdentifier(env.baseUrl, d.slug));
+
+  // Shared by the OAuth server and both route sets: the MCP routes build their
+  // handlers on its buses, the others publish on them when rights move.
+  const notifier = new McpNotifier({ log });
+
   const buildAuth = (scopes: readonly string[]) =>
     createAuth(db, {
       baseUrl: env.baseUrl,
@@ -77,17 +92,24 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       sendOtp:
         options.sendOtp ?? createOtpSender(env, (message) => app.log.info(message)),
       externalResources,
-      // A disabled MCP grants nothing, as on the rack's own /mcp/:slug route.
-      mcpAccesses: async (userId) => {
-        const [accesses, enabled] = await Promise.all([
+      mcpResources: localMcps().map((d) => ({ slug: d.slug, name: d.name })),
+      // The rack's own record of what each client may use, MCP by MCP.
+      onConsent: async (consent) => {
+        notifier.toolsChanged(await recordConsent(db, consent));
+      },
+      // A disabled MCP grants nothing, and the level the account set for this
+      // client applies, as on the rack's own /mcp/:slug route.
+      mcpAccesses: async (userId, clientId) => {
+        const [accesses, enabled, levels] = await Promise.all([
           registry.userAccesses(userId),
           db.mcp.findMany({ where: { enabled: true }, select: { slug: true } }),
+          grantLevels(db, { userId, clientId }),
         ]);
         const slugs = new Set(enabled.map((mcp) => mcp.slug));
         for (const slug of Object.keys(accesses)) {
           if (!slugs.has(slug)) delete accesses[slug];
         }
-        return accesses;
+        return capByGrants(accesses, levels);
       },
       extraScopes: [...scopes],
     });
@@ -114,6 +136,16 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           where: { identifier: rackResource },
           data: { allowedScopes: next },
         });
+        // The resource of an MCP added at runtime was seeded by the rebuild:
+        // open it to the clients already registered, and drop the resources
+        // of MCPs that are gone.
+        const identifiers = mcpResourceIds();
+        await linkClientsToResources(db, identifiers);
+        await db.oauthResource.deleteMany({
+          where: {
+            identifier: { startsWith: `${rackResource}/`, notIn: identifiers },
+          },
+        });
         await db.oauthClient.updateMany({
           where: { scopes: { hasEvery: previous } },
           data: { scopes: next },
@@ -128,12 +160,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   // Resource rows are seeded when Better Auth initializes; then give clients
   // registered before an external app was declared access to its resources.
   await auth.$context;
-  const linked = await linkClientsToResources(
-    db,
-    externalResourceIdentifiers(externalResources),
-  );
-  if (linked > 0)
-    log.info("linked existing OAuth clients to external resources", { linked });
+  const linked = await linkClientsToResources(db, [
+    ...mcpResourceIds(),
+    ...externalResourceIdentifiers(externalResources),
+  ]);
+  if (linked > 0) log.info("linked existing OAuth clients to resources", { linked });
 
   await app.register(fastifyCors, {
     origin: [env.baseUrl],
@@ -185,8 +216,33 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get("/.well-known/oauth-protected-resource", async (request, reply) =>
     sendWebResponse(reply, await auth.handler(toWebRequest(request))),
   );
-  app.get("/.well-known/oauth-protected-resource/*", async (request, reply) =>
-    sendWebResponse(reply, await auth.handler(toWebRequest(request))),
+  // RFC 9728, one document per MCP: a client connecting to /mcp/<slug> is
+  // told about that MCP's two scopes only, so the consent screen it opens
+  // shows this MCP and not the whole rack. The provider knows a single
+  // protected resource; its document is reused with the MCP's own identity.
+  const rackResourcePath = new URL(rackResource).pathname.replace(/\/$/, "");
+  app.get<{ Params: { "*": string } }>(
+    "/.well-known/oauth-protected-resource/*",
+    async (request, reply) => {
+      const path = `/${request.params["*"]}`.replace(/\/$/, "");
+      const slug = path.startsWith(`${rackResourcePath}/`)
+        ? path.slice(rackResourcePath.length + 1)
+        : null;
+      const definition = slug ? registry.definition(slug) : undefined;
+      if (!slug || !definition || definition.external) {
+        return sendWebResponse(reply, await auth.handler(toWebRequest(request)));
+      }
+      const base = await auth.handler(
+        toWebRequest(request, `/.well-known/oauth-protected-resource${rackResourcePath}`),
+      );
+      if (!base.ok) return sendWebResponse(reply, base);
+      const metadata = (await base.json()) as Record<string, unknown>;
+      return reply.header("cache-control", "no-store").send({
+        ...metadata,
+        resource: mcpResourceIdentifier(env.baseUrl, slug),
+        scopes_supported: mcpScopes(slug),
+      });
+    },
   );
 
   const toolConfig: ToolServicesConfig = {
@@ -199,10 +255,6 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
     github: { token: env.githubToken, ...options.toolConfig?.github },
   };
-
-  // Shared by both route sets: the MCP routes build their handlers on its
-  // buses, the admin routes publish on them when rights or definitions move.
-  const notifier = new McpNotifier({ log });
 
   await registerMcpRoutes(app, {
     auth,
