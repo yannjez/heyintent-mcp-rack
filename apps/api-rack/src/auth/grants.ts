@@ -1,5 +1,5 @@
 import type { Db } from "@rack/database";
-import { type Access, type McpDefinition, parseMcpScope } from "@rack/mcp-kit";
+import { type Access, type McpDefinition, minAccess, parseMcpScope } from "@rack/mcp-kit";
 
 /**
  * OAuth resource identifier of an MCP served by the rack: its own endpoint.
@@ -85,21 +85,20 @@ export async function grantLevels(
 }
 
 /**
- * Lower each access to the level granted to the client. An MCP without a
- * grant is left untouched: the grant can only lower, and whether a client may
- * hold a token at all is decided by the provider's consent, which a withdrawal
- * deletes along with the refresh tokens.
+ * What a client may do for an account: the account's own access, lowered to
+ * the level it granted the client. No grant, no access, as on the rack's own
+ * /mcp/:slug route.
  */
 export function capByGrants(
   accesses: Record<string, Access>,
   levels: Record<string, Access>,
 ): Record<string, Access> {
-  return Object.fromEntries(
-    Object.entries(accesses).map(([slug, access]) => [
-      slug,
-      levels[slug] === "read" ? "read" : access,
-    ]),
-  );
+  const capped: Record<string, Access> = {};
+  for (const [slug, level] of Object.entries(levels)) {
+    const access = minAccess(accesses[slug] ?? null, level);
+    if (access) capped[slug] = access;
+  }
+  return capped;
 }
 
 /**

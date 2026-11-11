@@ -267,7 +267,8 @@ au rack. On la déclare dans `EXTERNAL_MCPS` (tableau JSON `slug`, `name`, `url`
   existaient déjà au démarrage du rack ;
 - ajoute aux access tokens la claim `mcp_access` (`{"<slug>": "read" | "write"}`) : les scopes
   demandés, plafonnés par l'accès de l'utilisateur dans le rack et par le niveau que le compte
-  a laissé à ce client dans « Mes consommateurs ». La claim est recalculée à chaque émission,
+  a laissé à ce client dans « Mes consommateurs » (sans ligne `mcp_grants`, le MCP n'y figure
+  pas). La claim est recalculée à chaque émission,
   rafraîchissement compris : un niveau baissé vaut dès le jeton suivant, donc au plus tard
   15 minutes après (un JWT déjà émis ne se révoque pas).
 

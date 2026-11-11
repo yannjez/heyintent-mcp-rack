@@ -456,6 +456,14 @@ describe.skipIf(!databaseUrl)("oauth autodiscover flow", () => {
     });
     expect(restored.access).toEqual({ sample: "write" });
 
+    // No grant, no access: scopes and consent alone open nothing.
+    await db.mcpGrant.deleteMany({ where: { clientId } });
+    const ungranted = await issue({
+      grant_type: "refresh_token",
+      refresh_token: restored.refreshToken,
+    });
+    expect(ungranted.access).toEqual({});
+
     await db.mcpGroupUser.deleteMany({ where: { userId: user.id } });
   });
 
